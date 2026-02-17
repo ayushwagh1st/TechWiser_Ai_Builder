@@ -1,0 +1,7 @@
+# Start the development server
+npm run dev
+
+# In a new terminal, start Convex
+npx convex dev
+
+# Open http://localhost:3000

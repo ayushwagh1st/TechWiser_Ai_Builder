@@ -2,14 +2,15 @@ import { openRouterChatStream } from "@/configs/AiModel";
 
 export async function POST(req) {
   try {
-    const { prompt } = await req.json();
+    const { messages } = await req.json();
+    const msgs = Array.isArray(messages) ? messages : [];
 
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
       async start(controller) {
         try {
           let fullText = "";
-          const textStream = await openRouterChatStream(prompt);
+          const textStream = await openRouterChatStream(msgs);
 
           for await (const delta of textStream) {
             if (!delta) continue;

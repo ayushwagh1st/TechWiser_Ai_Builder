@@ -1,5 +1,5 @@
 export default {
-    SUGGSTIONS: ['Create Todo App', 'Create a Budget Track App', 'Create a Login and Signup page',
+  SUGGSTIONS: ['Create Todo App', 'Create a Budget Track App', 'Create a Login and Signup page',
     "Develop a Task Management App",
     "Create a Fully Responsive Blog Platform",
     "Design a Minimalistic Note-Taking App",
@@ -12,10 +12,22 @@ export default {
     "Create a Music Streaming Service"
   ],
 
-    DEFAULT_FILE: {
-        '/public/index.html':
-        {
-            code: `<!DOCTYPE html>
+  DEFAULT_FILE: {
+    '/package.json': {
+      code: JSON.stringify({
+        name: "generated-project",
+        version: "1.0.0",
+        private: true,
+        main: "/index.js",
+        dependencies: {
+          "react": "^18.2.0",
+          "react-dom": "^18.2.0"
+        }
+      }, null, 2)
+    },
+    '/public/index.html':
+    {
+      code: `<!DOCTYPE html>
             <html lang="en">
             <head>
               <meta charset="UTF-8">
@@ -27,14 +39,14 @@ export default {
               <div id="root"></div>
             </body>
             </html>`
-        },
-        '/App.css': {
-            code: `@tailwind base;
+    },
+    '/App.css': {
+      code: `@tailwind base;
             @tailwind components;
             @tailwind utilities;`
-        },
-        '/tailwind.config.js': {
-            code: `/** @type {import('tailwindcss').Config} */
+    },
+    '/tailwind.config.js': {
+      code: `/** @type {import('tailwindcss').Config} */
 module.exports = {
   content: [
     "./src/**/*.{js,jsx,ts,tsx}",
@@ -44,9 +56,9 @@ module.exports = {
   },
   plugins: [],
 }`
-        },
-        '/postcss.config.js': {
-  code: `/** @type {import('postcss-load-config').Config} */
+    },
+    '/postcss.config.js': {
+      code: `/** @type {import('postcss-load-config').Config} */
 const config = {
   plugins: {
     tailwindcss: {},
@@ -55,13 +67,13 @@ const config = {
 
 export default config;
 `
-}
+    }
 
-        },
+  },
 
-    DEPENDANCY: {
-            "@google/generative-ai": "^0.21.0",
-            "@heroicons/react": "^1.0.6",
+  DEPENDANCY: {
+    "@google/generative-ai": "^0.21.0",
+    "@heroicons/react": "^1.0.6",
     "@headlessui/react": "^1.7.17",
     "autoprefixer": "^10.0.0",
     "firebase": "^11.1.0",
@@ -80,5 +92,5 @@ export default config;
     "uuidv4": "^6.2.13",
     "uuid": "^11.1.0",
     "@mui/material": "^6.4.6"
-        }
-    }
+  }
+}

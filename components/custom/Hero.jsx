@@ -1,7 +1,7 @@
 "use client"
 import Lookup from '@/data/Lookup';
 import { MessagesContext } from '@/context/MessagesContext';
-import { ArrowRight, Link, Sparkles, Send, Wand2, Loader2 } from 'lucide-react';
+import { ArrowRight, Sparkles, Send, Link, Wand2 } from 'lucide-react';
 import React, { useContext, useState } from 'react';
 import { useMutation } from 'convex/react';
 import { api } from '@/convex/_generated/api';
@@ -9,12 +9,13 @@ import { useRouter } from 'next/navigation';
 
 function Hero() {
     const [userInput, setUserInput] = useState('');
-    const [isEnhancing, setIsEnhancing] = useState(false);
+    const [isFocused, setIsFocused] = useState(false);
     const { messages, setMessages } = useContext(MessagesContext);
     const CreateWorkspace = useMutation(api.workspace.CreateWorkspace);
     const router = useRouter();
 
     const onGenerate = async (input) => {
+        if (!input?.trim()) return;
         const msg = {
             role: 'user',
             content: input
@@ -26,155 +27,100 @@ function Hero() {
         router.push('/workspace/' + workspaceID);
     }
 
-    const enhancePrompt = async () => {
-        if (!userInput) return;
-        
-        setIsEnhancing(true);
-        try {
-            const response = await fetch('/api/enhance-prompt', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ prompt: userInput }),
-            });
-
-            if (!response.ok) {
-                throw new Error(`Server error: ${response.status}`);
-            }
-
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder();
-            let enhancedText = '';
-
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-
-                const chunk = decoder.decode(value);
-                const lines = chunk.split('\n');
-
-                for (const line of lines) {
-                    if (line.startsWith('data: ')) {
-                        try {
-                            const data = JSON.parse(line.slice(6));
-                            if (data.error) {
-                                console.error('Enhance error:', data.error);
-                                alert(`Failed to enhance prompt: ${data.error}`);
-                                break;
-                            }
-                            if (data.chunk) {
-                                enhancedText += data.chunk;
-                                setUserInput(enhancedText);
-                            }
-                            if (data.done && data.enhancedPrompt) {
-                                setUserInput(data.enhancedPrompt);
-                            }
-                        } catch (e) {
-                            // Skip invalid JSON
-                        }
-                    }
-                }
-            }
-        } catch (error) {
-            console.error('Error enhancing prompt:', error);
-            alert(`Failed to enhance prompt: ${error.message}`);
-        } finally {
-            setIsEnhancing(false);
-        }
-    };
-
-    const onSuggestionClick = (suggestion) => {
-        setUserInput(suggestion);
-    };
-
     return (
-        <div className="min-h-screen bg-gray-950 relative overflow-hidden">
-            {/* Animated background elements */}
-            <div className="absolute inset-0 bg-[linear-gradient(to_right,#4f4f4f2e_1px,transparent_1px),linear-gradient(to_bottom,#4f4f4f2e_1px,transparent_1px)] bg-[size:14px_24px]">
-                <div className="absolute left-1/2 top-0 h-[500px] w-[1000px] -translate-x-1/2 bg-[radial-gradient(circle_400px_at_50%_300px,#3b82f625,transparent)]" />
+        <div className="relative min-h-[100dvh] flex flex-col items-center justify-center overflow-hidden bg-[#0a0a0a] text-white selection:bg-violet-500/30">
+            {/* Background Effects — subtle Lovable-style radials */}
+            <div className="absolute inset-0 z-0 pointer-events-none overflow-hidden">
+                <div className="absolute top-[-30%] left-[10%] w-[600px] h-[600px] bg-violet-600/[0.07] rounded-full blur-[120px]" />
+                <div className="absolute bottom-[-20%] right-[5%] w-[500px] h-[500px] bg-fuchsia-600/[0.06] rounded-full blur-[120px]" />
+                <div className="absolute top-[20%] right-[30%] w-[300px] h-[300px] bg-blue-600/[0.04] rounded-full blur-[100px]" />
             </div>
 
-            <div className="container mx-auto px-4 py-16 relative z-10">
-                <div className="flex flex-col items-center justify-center space-y-12">
-                    {/* Hero Header */}
-                    <div className="text-center space-y-6">
-                        <div className="inline-flex items-center justify-center space-x-2 bg-electric-blue-500/20 rounded-full px-6 py-3 mb-6 border border-electric-blue-500/30">
-                            <Sparkles className="h-6 w-6 text-electric-blue-400" />
-                            <span className="text-electric-blue-400 text-lg font-semibold tracking-wide">
-                                TECHWISER · AI WEBSITE & APP BUILDER
-                            </span>
-                        </div>
-                        <h1 className="text-6xl md:text-7xl font-bold text-transparent bg-clip-text bg-[linear-gradient(45deg,#60a5fa_30%,#ec4899)] leading-tight">
-                            Describe it.<br className="md:hidden" /> We build it.
-                        </h1>
-                        <p className="text-xl text-neon-cyan max-w-3xl mx-auto font-mono tracking-tight">
-                            Turn your ideas into production-ready React websites and web apps with AI-powered generation.
-                        </p>
+            {/* Main Content */}
+            <div className="relative z-10 w-full max-w-3xl px-5 sm:px-8 flex flex-col items-center text-center pt-20 md:pt-0">
+                {/* Badge */}
+                <div className="animate-in fade-in slide-in-from-bottom-3 duration-500 mb-6 sm:mb-8">
+                    <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full glass text-[13px] font-medium text-zinc-400 hover:text-zinc-300 transition-colors cursor-default">
+                        <Sparkles className="h-3.5 w-3.5 text-violet-400" />
+                        <span>Powered by AI</span>
+                        <ArrowRight className="h-3 w-3 text-zinc-600" />
                     </div>
+                </div>
 
-                    {/* Modified Input Section */}
-                    <div className="w-full max-w-3xl bg-gray-900/40 backdrop-blur-2xl rounded-xl border-2 border-electric-blue-500/40 shadow-[0_0_40px_5px_rgba(59,130,246,0.15)]">
-                        <div className="p-2 bg-gradient-to-r from-electric-blue-500/10 to-purple-500/10">
-                            <div className="bg-gray-900/80 p-6 rounded-lg">
-                                <div className="flex gap-4">
-                                    <textarea
-                                        placeholder="Describe your dream website in simple words (for example: “a modern website for my bakery with menu, photos and contact form”). No technical details needed."
-                                        value={userInput}
-                                        onChange={(e) => setUserInput(e.target.value)}
-                                        className="w-full bg-transparent border-2 border-electric-blue-500/30 rounded-lg p-5 text-gray-100 placeholder-electric-blue-500/60 focus:border-electric-blue-500 focus:ring-0 outline-none font-mono text-lg h-40 resize-none transition-all duration-300 hover:border-electric-blue-500/60"
-                                        disabled={isEnhancing}
-                                    />
-                                    <div className="flex flex-col gap-2">
-                                        {userInput && (
-                                            <>
-                                                <button
-                                                    onClick={enhancePrompt}
-                                                    disabled={isEnhancing}
-                                                    className={`flex items-center justify-center bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-600 hover:to-teal-600 rounded-xl px-4 py-4 transition-all duration-200 ${isEnhancing ? 'opacity-70 cursor-not-allowed' : ''}`}
-                                                >
-                                                    {isEnhancing ? (
-                                                        <Loader2 className="h-8 w-8 animate-spin" />
-                                                    ) : (
-                                                        <Wand2 className="h-8 w-8" />
-                                                    )}
-                                                </button>
-                                                <button
-                                                    onClick={() => onGenerate(userInput)}
-                                                    disabled={isEnhancing}
-                                                    className={`flex items-center justify-center bg-gradient-to-r from-blue-500 to-purple-500 hover:from-blue-600 hover:to-purple-600 rounded-xl px-4 py-4 transition-all duration-200 ${isEnhancing ? 'opacity-70 cursor-not-allowed' : ''}`}
-                                                >
-                                                    <Send className="h-8 w-8" />
-                                                </button>
-                                            </>
-                                        )}
-                                    </div>
+                {/* Headline */}
+                <h1 className="text-3xl sm:text-5xl md:text-6xl lg:text-7xl font-bold tracking-tight leading-[1.1] animate-in fade-in slide-in-from-bottom-4 duration-700 delay-100 mb-4 sm:mb-5">
+                    What do you want
+                    <br />
+                    <span className="text-gradient">to build?</span>
+                </h1>
+
+                {/* Subtitle */}
+                <p className="text-base sm:text-lg text-zinc-500 max-w-lg animate-in fade-in slide-in-from-bottom-5 duration-700 delay-150 mb-8 sm:mb-10">
+                    Describe your app and TechWiser will generate production-ready code in seconds.
+                </p>
+
+                {/* Prompt Input */}
+                <div className="w-full animate-in fade-in slide-in-from-bottom-6 duration-700 delay-200">
+                    <div className={`relative rounded-2xl transition-all duration-300 ${isFocused ? 'glow-border-focus' : 'glow-border'}`}>
+                        <div className="glass-strong rounded-2xl overflow-hidden">
+                            <textarea
+                                placeholder="Describe your app idea..."
+                                value={userInput}
+                                onChange={(e) => setUserInput(e.target.value)}
+                                onFocus={() => setIsFocused(true)}
+                                onBlur={() => setIsFocused(false)}
+                                onKeyDown={(e) => {
+                                    if (e.key === 'Enter' && !e.shiftKey) {
+                                        e.preventDefault();
+                                        onGenerate(userInput);
+                                    }
+                                }}
+                                className="w-full bg-transparent text-[15px] sm:text-base px-5 py-4 min-h-[56px] max-h-[140px] text-white placeholder-zinc-600 focus:ring-0 resize-none outline-none leading-relaxed"
+                                rows={2}
+                            />
+                            <div className="flex items-center justify-between px-3 py-2.5 border-t border-white/[0.04]">
+                                <div className="flex items-center gap-2">
+                                    <button className="p-2 text-zinc-600 hover:text-zinc-400 rounded-lg hover:bg-white/[0.04] transition-colors" title="Attach">
+                                        <Link className="h-4 w-4" />
+                                    </button>
+                                    <span className="text-[11px] font-medium text-zinc-700 border border-zinc-800 rounded px-1.5 py-0.5">
+                                        Plan
+                                    </span>
                                 </div>
-                                <div className="flex justify-end mt-4">
-                                    <Link className="h-6 w-6 text-electric-blue-400/80 hover:text-electric-blue-400 transition-colors duration-200" />
-                                </div>
+                                <button
+                                    onClick={() => onGenerate(userInput)}
+                                    disabled={!userInput.trim()}
+                                    className={`p-2.5 rounded-xl transition-all duration-200 ${userInput.trim()
+                                        ? 'bg-gradient-to-r from-violet-600 to-fuchsia-600 text-white shadow-lg shadow-violet-600/25 hover:shadow-violet-600/40 hover:scale-105 active:scale-95'
+                                        : 'bg-zinc-800/50 text-zinc-600 cursor-not-allowed'
+                                        }`}
+                                >
+                                    <Send className="h-4 w-4" />
+                                </button>
                             </div>
                         </div>
                     </div>
+                </div>
 
-                    {/* Holographic Suggestions Grid */}
-                    <div className="w-full max-w-5xl">
-                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                            {Lookup?.SUGGSTIONS.map((suggestion, index) => (
-                                <button
-                                    key={index}
-                                    onClick={() => onSuggestionClick(suggestion)}
-                                    className="group relative p-6 bg-gray-900/50 hover:bg-gray-800/60 border-2 border-electric-blue-500/20 rounded-xl text-left transition-all duration-300 hover:border-electric-blue-500/40 hover:shadow-[0_0_20px_2px_rgba(59,130,246,0.2)]"
-                                >
-                                    <div className="absolute inset-0 bg-[linear-gradient(45deg,transparent_50%,#3b82f620)] opacity-0 group-hover:opacity-100 transition-opacity duration-300 rounded-lg" />
-                                    <span className="text-electric-blue-400/80 group-hover:text-electric-blue-400 font-mono text-sm tracking-wide transition-colors duration-300">
-                                        {suggestion}
-                                    </span>
-                                </button>
-                            ))}
-                        </div>
+                {/* Suggestion Chips */}
+                <div className="w-full mt-6 sm:mt-8 animate-in fade-in slide-in-from-bottom-8 duration-700 delay-300">
+                    <div className="grid grid-cols-2 sm:flex sm:flex-wrap sm:justify-center gap-2 sm:gap-2.5">
+                        {Lookup?.SUGGSTIONS?.slice(0, 4).map((suggestion, index) => (
+                            <button
+                                key={index}
+                                onClick={() => setUserInput(suggestion)}
+                                className="px-3.5 py-2 rounded-xl glass text-[13px] text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.06] transition-all duration-200 text-left sm:text-center truncate"
+                            >
+                                {suggestion}
+                            </button>
+                        ))}
                     </div>
                 </div>
+            </div>
+
+            {/* Footer */}
+            <div className="absolute bottom-6 sm:bottom-8 text-zinc-700 text-xs font-medium tracking-wide">
+                Built with TechWiser AI
             </div>
         </div>
     );

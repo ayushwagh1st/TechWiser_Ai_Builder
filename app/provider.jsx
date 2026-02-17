@@ -7,9 +7,13 @@ import { MessagesContext } from '@/context/MessagesContext';
 function Provider({children}) {
   const [messages, setMessages] = useState();
   const [previewError, setPreviewError] = useState(null);
+  const [buildOptions, setBuildOptions] = useState({
+    includeSupabase: false,
+    deployToVercel: false,
+  });
   return (
     <div>
-      <MessagesContext.Provider value={{ messages, setMessages, previewError, setPreviewError }}>
+      <MessagesContext.Provider value={{ messages, setMessages, previewError, setPreviewError, buildOptions, setBuildOptions }}>
         <NextThemesProvider
             attribute="class"
             defaultTheme="dark"
