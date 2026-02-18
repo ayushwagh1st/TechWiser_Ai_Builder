@@ -324,77 +324,8 @@ features grid, and pricing cards"
 
 </div>
 
-<!-- Contributing -->
-<img src="https://user-images.githubusercontent.com/73097560/115834477-dbab4500-a447-11eb-908a-139a6edaec5c.gif">
-
-<h2 align="center">
-  <img src="https://github.com/Anmol-Baranwal/Cool-GIFs-For-GitHub/assets/74038190/1a797ec4-50c0-43b1-b799-894e2493442d" width="35">
-  Contributing
-  <img src="https://github.com/Anmol-Baranwal/Cool-GIFs-For-GitHub/assets/74038190/1a797ec4-50c0-43b1-b799-894e2493442d" width="35">
-</a>
-</h2>
 
 <div align="center">
-
-We love contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details.
-
-### 🌟 How to Contribute
-
-```mermaid
-gitGraph
-    commit id: "Fork Repository"
-    branch feature
-    checkout feature
-    commit id: "Create Feature"
-    commit id: "Write Tests"
-    commit id: "Update Docs"
-    checkout main
-    merge feature id: "Open PR"
-    commit id: "Merged! 🎉"
-```
-
-### 👥 Contributors
-
-<a href="https://github.com/Ratna-Babu/ai-website-builder/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=Ratna-Babu/ai-website-builder"/>
-</a>
-
-</div>
-
-
-<!-- Support -->
-<img src="https://user-images.githubusercontent.com/73097560/115834477-dbab4500-a447-11eb-908a-139a6edaec5c.gif">
-
-<h2 align="center">
-  <img src="https://github.com/Anmol-Baranwal/Cool-GIFs-For-GitHub/assets/74038190/2e0051b6-726f-442f-8025-88936b87ce07" width="35">
-  Support & Community
-  <img src="https://github.com/Anmol-Baranwal/Cool-GIFs-For-GitHub/assets/74038190/2e0051b6-726f-442f-8025-88936b87ce07" width="35">
-</h2>
-
-<div align="center">
-
-### 💬 Get Help
-
-[![Discussions](https://img.shields.io/badge/GitHub-Discussions-181717?style=for-the-badge&logo=github)](https://github.com/Ratna-Babu/ai-website-builder/discussions)
-[![Issues](https://img.shields.io/badge/Issues-Report_Bug-red?style=for-the-badge&logo=github)](https://github.com/Ratna-Babu/ai-website-builder/issues)
-
-### ⭐ Show Your Support
-
-<table>
-<tr>
-<td align="center">
-
-Give a ⭐ if this project helped you!
-
-[![GitHub stars](https://img.shields.io/github/stars/Ratna-Babu/ai-website-builder?style=social)](https://github.com/Ratna-Babu/ai-website-builder)
-
-</td>
-
-</tr>
-</table>
-
-
-</div>
 
 <!-- Acknowledgments -->
 <img src="https://user-images.githubusercontent.com/73097560/115834477-dbab4500-a447-11eb-908a-139a6edaec5c.gif">
@@ -411,7 +342,6 @@ Special thanks to these amazing projects and teams:
 
 | Project | Description |
 |---------|-------------|
-| **[Google Gemini](https://ai.google.dev/)** | For powerful AI capabilities |
 | **[Vercel](https://vercel.com/)** | For seamless deployment platform |
 | **[Convex](https://convex.dev/)** | For real-time backend infrastructure |
 | **[Next.js](https://nextjs.org/)** | For the amazing React framework |
@@ -429,7 +359,7 @@ Special thanks to these amazing projects and teams:
 <div align="center">
   <b><a href="#-ai-powered-website-builder">⬆ Back to Top</a></b>
   
-  <sub>Made with ❤️ by [Ratna Babu](https://github.com/Ratna-Babu) and contributors</sub>
+  <sub>Made with ❤️ by [Ayush Wagh](https://github.com/ayushwagh1st) and contributors</sub>
   
 </div>
 
