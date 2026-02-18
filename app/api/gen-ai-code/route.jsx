@@ -1,4 +1,4 @@
-import { openRouterPlanStream, openRouterCodeStream } from "@/configs/AiModel";
+import { openRouterCodeStream } from "@/configs/AiModel";
 
 /**
  * Sanitize error messages so no internal details leak to the user.
@@ -157,21 +157,11 @@ function extractJson(text) {
   return cleaned;
 }
 
-/**
- * Collect stream text from an async iterable and call safeSend for each chunk.
- */
-async function collectStream(streamIterable, safeSend) {
-  let fullText = "";
-  for await (const delta of streamIterable) {
-    if (!delta) continue;
-    fullText += delta;
-    safeSend({ chunk: delta });
-  }
-  return fullText;
-}
+
 
 /**
  * Try to parse fullText into a valid code-gen result. Returns parsed object or null.
+ * Now includes a fallback that extracts just the "files" subtree if the outer JSON is broken.
  */
 function tryParseCodeResult(fullText) {
   try {
@@ -188,6 +178,14 @@ function tryParseCodeResult(fullText) {
     if (parsedData && parsedData.files && typeof parsedData.files === "object") {
       return parsedData;
     }
+
+    // Fallback: maybe the AI returned files at the top level without wrapper
+    // Check if parsedData looks like a files map (keys start with "/" and values have "code")
+    const keys = Object.keys(parsedData || {});
+    if (keys.length > 0 && keys.some(k => k.startsWith('/')) && keys.some(k => parsedData[k]?.code)) {
+      return { files: parsedData, projectTitle: "Generated Project", explanation: "" };
+    }
+
     return null;
   } catch (e) {
     console.warn("tryParseCodeResult failed:", e.message);
@@ -195,10 +193,51 @@ function tryParseCodeResult(fullText) {
   }
 }
 
+/**
+ * Last-resort extraction: find "files" key in raw text and try to parse just that subtree.
+ */
+function extractFilesFromRawText(fullText) {
+  try {
+    // Find "files" : { and extract from there
+    const filesIdx = fullText.indexOf('"files"');
+    if (filesIdx === -1) return null;
+
+    // Find the opening brace after "files" :
+    const colonIdx = fullText.indexOf(':', filesIdx + 7);
+    if (colonIdx === -1) return null;
+
+    const braceIdx = fullText.indexOf('{', colonIdx);
+    if (braceIdx === -1) return null;
+
+    // Find matching closing brace
+    let depth = 0;
+    let end = -1;
+    for (let i = braceIdx; i < fullText.length; i++) {
+      if (fullText[i] === '{') depth++;
+      else if (fullText[i] === '}') {
+        depth--;
+        if (depth === 0) { end = i; break; }
+      }
+    }
+    if (end === -1) return null;
+
+    const filesStr = fullText.slice(braceIdx, end + 1);
+    const fixed = fixBadEscapes(filesStr);
+    const files = JSON.parse(fixed);
+
+    if (typeof files === 'object' && Object.keys(files).length > 0) {
+      return { files, projectTitle: "Generated Project", explanation: "" };
+    }
+  } catch (e) {
+    console.warn("extractFilesFromRawText failed:", e.message);
+  }
+  return null;
+}
+
 export const maxDuration = 300; // Allow up to 5 minutes for generation
 
 export async function POST(req) {
-  const MAX_CODE_RETRIES = 3; // Total attempts for code generation
+  const MAX_CODE_RETRIES = 3;
 
   try {
     const { messages, currentFilePaths, includeSupabase, deployToVercel } = await req.json();
@@ -221,52 +260,55 @@ export async function POST(req) {
         };
 
         try {
-          // Phase 1: Planning (thinking phase)
-          let buildPlan = null;
-          try {
-            let planText = "";
-            const planStream = await openRouterPlanStream(msgs);
-            for await (const delta of planStream) {
-              if (delta) planText += delta;
-            }
-            const planResult = extractJson(planText);
-            if (planResult && typeof planResult === "object") {
-              buildPlan = planResult;
-            } else if (typeof planResult === "string") {
-              buildPlan = JSON.parse(planResult);
-            }
-          } catch (e) {
-            console.warn("Planning phase failed (non-fatal):", e.message);
-            buildPlan = null;
-          }
-
-          // Phase 2: Code generation with retry on parse failure
+          // Code generation with retry on parse failure
+          // IMPORTANT: Only stream chunks on first attempt.
+          // On retries, collect silently to avoid sending duplicate/mixed text to client.
           let parsedData = null;
           let lastError = null;
 
           for (let attempt = 0; attempt < MAX_CODE_RETRIES; attempt++) {
-            if (attempt > 0) {
-              console.log(`[Retry] Code generation attempt ${attempt + 1}/${MAX_CODE_RETRIES} — previous attempt had bad JSON`);
-              safeSend({ chunk: "\n\n⏳ Retrying with another model...\n" });
+            const isFirstAttempt = attempt === 0;
+
+            if (!isFirstAttempt) {
+              // Wait 3s before retry to let rate limits cool down
+              await new Promise(resolve => setTimeout(resolve, 3000));
+              console.log(`[Retry] Code generation attempt ${attempt + 1}/${MAX_CODE_RETRIES}`);
+              safeSend({ chunk: "\n\n⏳ Retrying code generation...\n" });
             }
 
             try {
               const textStream = await openRouterCodeStream(msgs, paths, {
-                buildPlan,
                 includeSupabase: !!includeSupabase,
                 deployToVercel: !!deployToVercel,
               });
 
-              const fullText = await collectStream(textStream, safeSend);
+              // Collect the stream
+              let fullText = "";
+              for await (const delta of textStream) {
+                if (!delta) continue;
+                fullText += delta;
+                // Only stream raw chunks to client on first attempt
+                if (isFirstAttempt) {
+                  safeSend({ chunk: delta });
+                }
+              }
+
+              // Try to parse
               parsedData = tryParseCodeResult(fullText);
 
+              // Last-resort: extract just the files subtree
+              if (!parsedData) {
+                parsedData = extractFilesFromRawText(fullText);
+              }
+
               if (parsedData) {
-                // Success! Send final data
                 safeSend({ final: parsedData, done: true, result: fullText });
                 break;
               } else {
-                lastError = "Failed to parse AI response as JSON";
+                lastError = "Failed to parse AI response as valid code JSON";
                 console.warn(`[Retry] Attempt ${attempt + 1} failed: could not parse JSON from ${fullText.length} chars`);
+                // Log first 500 chars for debugging
+                console.warn(`[Retry] Response preview: ${fullText.slice(0, 500)}`);
               }
             } catch (e) {
               lastError = e.message || "Code generation failed";
@@ -278,7 +320,7 @@ export async function POST(req) {
             console.error("All code generation attempts failed:", lastError);
             safeSend({
               error: sanitizeError(lastError),
-              rawError: lastError, // Debug info for frontend
+              rawError: lastError,
               done: true,
             });
           }
@@ -288,7 +330,7 @@ export async function POST(req) {
           console.error("Stream Error:", e);
           safeSend({
             error: sanitizeError(e.message),
-            rawError: e.message // Debug info for frontend
+            rawError: e.message
           });
           safeClose();
         }

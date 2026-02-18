@@ -98,23 +98,23 @@ function isRateLimitError(status, body) {
 
 // --- Model Lists -----------------------------------------------------
 
-// Standard models for code generation
+// Standard models for code generation — verified OpenRouter slugs
 const MODELS = [
-  "deepseek/deepseek-r1:free",
-  "qwen/qwen-2.5-coder-32b-instruct:free",
-  "nousresearch/hermes-3-llama-3.1-405b:free",
-  "microsoft/phi-4:free",
-  "nvidia/llama-3.1-nemotron-70b-instruct:free",
-  "google/gemini-2.0-flash-exp:free", // Deprioritized per user feedback
-  "meta-llama/llama-3.3-70b-instruct:free", // Deprioritized per user feedback
+  "deepseek/deepseek-r1-0528:free",
+  "deepseek/deepseek-chat-v3-0324:free",
+  "meta-llama/llama-3.3-70b-instruct:free",
+  "mistralai/devstral-2512:free",
   "stepfun/step-3.5-flash:free",
+  "google/gemma-3-27b-it:free",
+  "google/gemini-2.0-flash-exp:free",
+  "nvidia/nemotron-3-nano-30b-a3b:free",
 ];
 
 // Lightweight models for planning
 const PLANNING_MODELS = [
-  "deepseek/deepseek-r1:free",
+  "deepseek/deepseek-r1-0528:free",
   "stepfun/step-3.5-flash:free",
-  "qwen/qwen-2.5-coder-32b-instruct:free",
+  "google/gemma-3-27b-it:free",
 ];
 
 // --- Warmup / Ready-Queue --------------------------------------------
@@ -286,7 +286,13 @@ function getOrderedCombos(models) {
 
 // --- Core: Streaming fetch -------------------------------------------
 
-async function* streamChatRaw(apiKey, model, messages) {
+async function* streamChatRaw(apiKey, model, messages, options = {}) {
+  const body = { model, messages, stream: true };
+  // Set max_tokens to prevent truncation (critical for code generation)
+  if (options.maxTokens) body.max_tokens = options.maxTokens;
+  // Request JSON mode for models that support it
+  if (options.jsonMode) body.response_format = { type: "json_object" };
+
   const res = await fetch(OPENROUTER_BASE, {
     method: "POST",
     headers: {
@@ -295,7 +301,7 @@ async function* streamChatRaw(apiKey, model, messages) {
       "HTTP-Referer": siteUrl,
       "X-Title": siteName,
     },
-    body: JSON.stringify({ model, messages, stream: true }),
+    body: JSON.stringify(body),
   });
 
   if (!res.ok) {
@@ -365,7 +371,7 @@ async function chatCompletionRaw(apiKey, model, messages) {
  * Try combos from the ready-queue first, then fall back.
  * Returns an async iterable of text deltas.
  */
-async function callWithFallback(messages, models) {
+async function callWithFallback(messages, models, streamOptions = {}) {
   if (API_KEYS.length === 0) {
     throw new Error("No OpenRouter API keys configured. Set OPENROUTER_API_KEY in .env.local");
   }
@@ -382,7 +388,7 @@ async function callWithFallback(messages, models) {
 
     try {
       console.log(`[AI] Key #${keyIdx + 1} → ${model}`);
-      const gen = streamChatRaw(API_KEYS[keyIdx], model, messages);
+      const gen = streamChatRaw(API_KEYS[keyIdx], model, messages, streamOptions);
 
       // Probe first chunk
       const reader = gen[Symbol.asyncIterator]();
@@ -499,27 +505,21 @@ export async function openRouterPlanStream(messages) {
 }
 
 export async function openRouterCodeStream(messages, currentFilePaths = [], options = {}) {
-  const { buildPlan, includeSupabase, deployToVercel } = options;
+  const { includeSupabase, deployToVercel } = options;
 
   const memoryNote = currentFilePaths.length > 0
-    ? `\n\n**MEMORY – CURRENT PROJECT FILES:** Build on these—do NOT recreate from scratch unless explicitly asked: ${currentFilePaths.join(", ")}`
-    : "\n\n**MEMORY:** The conversation contains what you previously built. When asked for changes or fixes, UPDATE existing files—do not start over.";
-  const planContext = buildPlan
-    ? `\n\n**PRE-GENERATED BUILD PLAN (follow this):**\n${typeof buildPlan === "string" ? buildPlan : JSON.stringify(buildPlan, null, 0)}`
+    ? `\nCURRENT PROJECT FILES (update these, do NOT recreate from scratch): ${currentFilePaths.join(", ")}`
     : "";
-  const phasedNote = `\n\n**PHASED CODING (for better context):** Generate files in this order: 1) index.css (design tokens), 2) App.js (routing/structure), 3) components (Navbar, Hero, etc.), 4) pages, 5) mock data. Output the final JSON with all files at once.`;
   const supabaseNote = includeSupabase
-    ? `\n\n**SUPABASE BACKEND:** Include Supabase client setup: @supabase/supabase-js, env vars SUPABASE_URL and SUPABASE_ANON_KEY. Add lib/supabase.js, auth helpers, and example queries for database/auth.`
+    ? `\nInclude Supabase client setup (@supabase/supabase-js) with lib/supabase.js and auth helpers.`
     : "";
   const vercelNote = deployToVercel
-    ? `\n\n**VERCEL DEPLOY:** Include vercel.json if needed. Ensure build scripts and env setup are Vercel-compatible.`
+    ? `\nEnsure Vercel-compatible build setup.`
     : "";
 
-  const systemPrompt = `${Prompt.CODE_GEN_PROMPT}
+  const systemPrompt = `${Prompt.CODE_GEN_PROMPT}${memoryNote}${supabaseNote}${vercelNote}
 
-**OUTPUT:** Return ONLY valid JSON. Your response must be parseable by JSON.parse(). Do not include markdown formatting like \`\`\`json. Just the raw JSON object.
-
-**CRITICAL ESCAPING RULE:** Inside JSON string values, you MUST properly escape all backslashes as \\\\, all double quotes as \\", all newlines as \\n, and all tabs as \\t. The output must be valid JSON.${memoryNote}${planContext}${phasedNote}${supabaseNote}${vercelNote}`;
+REMINDER: Your ENTIRE response must be a single valid JSON object with a "files" key. Nothing else.`;
 
   const formatted = Array.isArray(messages) && messages.length > 0
     ? [
@@ -531,7 +531,7 @@ export async function openRouterCodeStream(messages, currentFilePaths = [], opti
     ]
     : [{ role: "system", content: systemPrompt }];
 
-  return callWithFallback(formatted, MODELS);
+  return callWithFallback(formatted, MODELS, { maxTokens: 16384 });
 }
 
 export async function openRouterEnhance(promptWithRules) {

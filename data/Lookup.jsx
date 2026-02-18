@@ -45,6 +45,15 @@ export default {
             @tailwind components;
             @tailwind utilities;`
     },
+    '/App.js': {
+      code: `export default function App() {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', fontFamily: 'sans-serif', background: '#0a0a0a', color: '#fff' }}>
+      <p>Loading your app...</p>
+    </div>
+  );
+}`
+    },
     '/tailwind.config.js': {
       code: `/** @type {import('tailwindcss').Config} */
 module.exports = {

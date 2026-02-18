@@ -58,13 +58,24 @@ function CodeView() {
     const preprocessFiles = useCallback((files) => {
         const processed = {};
         Object.entries(files).forEach(([path, content]) => {
+            // Normalize path: strip src/ prefix, ensure leading /
+            let normalizedPath = path;
+            if (normalizedPath.startsWith('/src/')) {
+                normalizedPath = '/' + normalizedPath.slice(5);
+            } else if (normalizedPath.startsWith('src/')) {
+                normalizedPath = '/' + normalizedPath.slice(4);
+            }
+            if (!normalizedPath.startsWith('/')) {
+                normalizedPath = '/' + normalizedPath;
+            }
+
             if (typeof content === 'string') {
-                processed[path] = { code: content };
+                processed[normalizedPath] = { code: content };
             } else if (content && typeof content === 'object') {
                 if (!content.code && typeof content === 'object') {
-                    processed[path] = { code: JSON.stringify(content, null, 2) };
+                    processed[normalizedPath] = { code: JSON.stringify(content, null, 2) };
                 } else {
-                    processed[path] = content;
+                    processed[normalizedPath] = content;
                 }
             }
         });
@@ -149,6 +160,7 @@ function CodeView() {
 
             if (finalData && finalData.files) {
                 const processedAiFiles = preprocessFiles(finalData.files || {});
+                // AI files spread LAST to override both defaults AND Sandpack template
                 const mergedFiles = { ...Lookup.DEFAULT_FILE, ...processedAiFiles };
                 setFiles(mergedFiles);
 
