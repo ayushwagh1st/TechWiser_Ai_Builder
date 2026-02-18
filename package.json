@@ -1,6 +1,6 @@
 {
   "name": "techwiser-ai-builder",
-  "version": "0.1.0",
+  "version": "24.13.1",
   "private": true,
   "scripts": {
     "dev": "next dev",

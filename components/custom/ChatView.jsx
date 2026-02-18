@@ -16,7 +16,10 @@ const MessageItem = memo(({ msg }) => (
                 : 'glass text-zinc-300 rounded-bl-md'
                 }`}
         >
-            <ReactMarkdown className="prose prose-invert prose-sm max-w-none prose-p:my-1 prose-pre:bg-black/30 prose-pre:rounded-xl prose-code:text-violet-300 prose-headings:text-white">
+            <ReactMarkdown className="prose prose-invert prose-sm max-w-none 
+                prose-p:leading-relaxed prose-pre:p-0 prose-pre:bg-[#0a0a0a]/50 prose-pre:rounded-xl prose-pre:border prose-pre:border-white/[0.08] prose-pre:shadow-sm
+                prose-code:text-violet-300 prose-code:bg-white/10 prose-code:px-1 prose-code:py-0.5 prose-code:rounded-md prose-code:before:content-none prose-code:after:content-none
+                prose-headings:text-white prose-a:text-violet-400 prose-strong:text-white prose-ul:my-2 prose-li:my-0.5">
                 {msg.content}
             </ReactMarkdown>
         </div>

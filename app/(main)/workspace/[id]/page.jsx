@@ -2,7 +2,8 @@
 
 import dynamic from 'next/dynamic';
 import React, { useState } from 'react';
-import { MessageSquare, Code, Eye } from 'lucide-react';
+import { MessageSquare, Code, Eye, History } from 'lucide-react';
+import { AppSidebar } from '@/components/custom/AppSidebar';
 
 const ChatView = dynamic(() => import('@/components/custom/ChatView'), {
     ssr: false,
@@ -29,6 +30,7 @@ const Workspace = () => {
                 {[
                     { id: 'chat', label: 'Chat', icon: MessageSquare },
                     { id: 'code', label: 'Code', icon: Code },
+                    { id: 'history', label: 'History', icon: History },
                 ].map(({ id, label, icon: Icon }) => (
                     <button
                         key={id}
@@ -45,14 +47,17 @@ const Workspace = () => {
             </div>
 
             {/* Desktop Layout */}
-            <div className="hidden lg:flex relative z-10 flex-1 gap-4 p-4 pt-[72px] overflow-hidden">
-                {/* Chat sidebar — 25% width */}
-                <div className="w-[340px] min-w-[300px] flex-shrink-0 h-full">
-                    <ChatView />
-                </div>
-                {/* Code/Preview panel — remaining width */}
-                <div className="flex-1 h-full">
-                    <CodeView />
+            <div className="hidden lg:flex flex-row h-full">
+                <AppSidebar />
+                <div className="flex-1 flex relative z-10 gap-4 p-4 pt-[72px] overflow-hidden">
+                    {/* Chat sidebar — 25% width */}
+                    <div className="w-[340px] min-w-[300px] flex-shrink-0 h-full">
+                        <ChatView />
+                    </div>
+                    {/* Code/Preview panel — remaining width */}
+                    <div className="flex-1 h-full">
+                        <CodeView />
+                    </div>
                 </div>
             </div>
 
@@ -63,6 +68,9 @@ const Workspace = () => {
                 </div>
                 <div className={`h-full ${mobileTab === 'code' ? 'block' : 'hidden'}`}>
                     <CodeView />
+                </div>
+                <div className={`h-full ${mobileTab === 'history' ? 'block' : 'hidden'}`}>
+                    <AppSidebar />
                 </div>
             </div>
         </div>

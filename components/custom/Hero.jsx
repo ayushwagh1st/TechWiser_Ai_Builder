@@ -1,6 +1,7 @@
 "use client"
 import Lookup from '@/data/Lookup';
 import { MessagesContext } from '@/context/MessagesContext';
+import { useUser } from '@/hooks/useUser';
 import { ArrowRight, Sparkles, Send, Link, Wand2 } from 'lucide-react';
 import React, { useContext, useState } from 'react';
 import { useMutation } from 'convex/react';
@@ -11,6 +12,7 @@ function Hero() {
     const [userInput, setUserInput] = useState('');
     const [isFocused, setIsFocused] = useState(false);
     const { messages, setMessages } = useContext(MessagesContext);
+    const { user } = useUser();
     const CreateWorkspace = useMutation(api.workspace.CreateWorkspace);
     const router = useRouter();
 
@@ -22,7 +24,8 @@ function Hero() {
         }
         setMessages(msg);
         const workspaceID = await CreateWorkspace({
-            messages: [msg]
+            messages: [msg],
+            userToken: user?.token
         });
         router.push('/workspace/' + workspaceID);
     }
