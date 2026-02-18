@@ -9,6 +9,17 @@ html {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* Prevent double-tap zoom globally — makes taps feel instant */
+* {
+  touch-action: manipulation;
+}
+
+/* Prevent overscroll bounce on iOS (app-like) */
+html, body {
+  overscroll-behavior: none;
+  -webkit-overflow-scrolling: touch;
+}
+
 ::selection {
   background: rgba(139, 92, 246, 0.3);
 }
@@ -55,6 +66,11 @@ html {
     --input: 240 5.9% 90%;
     --ring: 240 10% 3.9%;
     --radius: 0.75rem;
+    /* Safe area CSS custom properties */
+    --safe-top: env(safe-area-inset-top, 0px);
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
+    --safe-left: env(safe-area-inset-left, 0px);
+    --safe-right: env(safe-area-inset-right, 0px);
   }
 
   .dark {
@@ -123,6 +139,27 @@ html {
     display: none;
   }
 
+  /* Safe-area padding utilities */
+  .pt-safe {
+    padding-top: env(safe-area-inset-top, 0px);
+  }
+
+  .pb-safe {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  .pl-safe {
+    padding-left: env(safe-area-inset-left, 0px);
+  }
+
+  .pr-safe {
+    padding-right: env(safe-area-inset-right, 0px);
+  }
+
+  .mb-safe {
+    margin-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
   /* Typing dots animation */
   .typing-dot {
     animation: typingBounce 1.4s infinite ease-in-out both;
@@ -156,11 +193,51 @@ html {
   }
 }
 
+/* ── Bottom nav animations ── */
+@keyframes navPillSlide {
+  from {
+    transform: scaleX(0.8);
+    opacity: 0;
+  }
+  to {
+    transform: scaleX(1);
+    opacity: 1;
+  }
+}
 
-/* Hide default Sandpack error overlay */
-.sp-error-message,
-.sp-error,
-.sp-c-kUOVZl,
+@keyframes tabFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.nav-pill-animate {
+  animation: navPillSlide 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.tab-content-animate {
+  animation: tabFadeIn 0.2s ease-out;
+}
+
+/* ── Standalone mode (PWA) specific styles ── */
+@media (display-mode: standalone) {
+  /* When running as installed PWA, remove any browser chrome hints */
+  body {
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  /* Allow text selection only in chat messages and code editors */
+  .prose, .cm-editor, textarea, input, code, pre {
+    -webkit-user-select: text;
+    user-select: text;
+  }
+}
 
 /* Hide default Sandpack error overlay */
 .sp-error-message,
@@ -170,7 +247,16 @@ html {
   display: none !important;
 }
 
-/* Safe area for mobile devices */
-.pb-safe {
-  padding-bottom: env(safe-area-inset-bottom);
+/* ── Mobile-specific optimizations ── */
+@media (max-width: 1023px) {
+  /* Prevent text-size adjust on orientation change */
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+
+  /* Smoother scrolling in chat areas */
+  .overflow-y-auto {
+    -webkit-overflow-scrolling: touch;
+  }
 }

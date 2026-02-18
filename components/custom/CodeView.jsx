@@ -7,20 +7,25 @@ import Prompt from '@/data/Prompt';
 import { useConvex, useMutation } from 'convex/react';
 import { useParams } from 'next/navigation';
 import { api } from '@/convex/_generated/api';
-import { Loader2Icon, Download, Rocket, Sparkles, Code, Eye } from 'lucide-react';
+import { Loader2Icon, Download, Rocket, Sparkles, Code, Eye, RefreshCw } from 'lucide-react';
 import JSZip from 'jszip';
 import { useSandpack } from "@codesandbox/sandpack-react";
 import ErrorBoundary from './ErrorBoundary';
+
+// --- Constants ---
+const MAX_CLIENT_RETRIES = 3;             // Auto-retry up to 3 times on client side
+const CLIENT_RETRY_DELAYS = [2000, 4000, 6000]; // Progressive backoff
+const INACTIVITY_MS = 180_000;            // 3 min inactivity timeout
+const ABSOLUTE_TIMEOUT_MS = 600_000;      // 10 min absolute max
 
 /** Sanitize error messages so internal details are never shown to users */
 function friendlyError(raw) {
     if (!raw || typeof raw !== 'string') return 'Something went wrong. Please try again.';
     const l = raw.toLowerCase();
     if (l.includes('busy') || l.includes('rate') || l.includes('429') || l.includes('temporarily')) return 'Our AI servers are busy right now. Please wait a moment and try again.';
-    if (l.includes('timeout') || l.includes('timed out') || l.includes('90 seconds')) return 'The request took too long. Please try again or simplify your prompt.';
-    if (l.includes('network') || l.includes('connection')) return 'Network error — please check your connection and try again.';
+    if (l.includes('timeout') || l.includes('timed out') || l.includes('function timed out')) return 'The request took too long. Please try again or simplify your prompt.';
+    if (l.includes('network') || l.includes('connection') || l.includes('fetch')) return 'Network error — please check your connection and try again.';
     if (l.includes('malformed') || l.includes('parse') || l.includes('json')) return 'The AI response was malformed. Please try again.';
-    // If the server already sanitized it, pass through; otherwise use generic
     if (l.includes('please') && !l.includes('http') && !l.includes('api') && !l.includes('key')) return raw;
     return 'Something went wrong. Please try again.';
 }
@@ -41,7 +46,9 @@ function CodeView() {
     const [loading, setLoading] = useState(false);
     const [deploying, setDeploying] = useState(false);
     const [elapsedTime, setElapsedTime] = useState(0);
+    const [loadingStatus, setLoadingStatus] = useState('Writing code & config...');
     const elapsedRef = useRef(null);
+    const retryCountRef = useRef(0); // Track which client retry we're on
 
     // Elapsed time counter for loading overlay
     useEffect(() => {
@@ -51,6 +58,7 @@ function CodeView() {
         } else {
             if (elapsedRef.current) clearInterval(elapsedRef.current);
             setElapsedTime(0);
+            setLoadingStatus('Writing code & config...');
         }
         return () => { if (elapsedRef.current) clearInterval(elapsedRef.current); };
     }, [loading]);
@@ -58,7 +66,6 @@ function CodeView() {
     const preprocessFiles = useCallback((files) => {
         const processed = {};
         Object.entries(files).forEach(([path, content]) => {
-            // Normalize path: strip src/ prefix, ensure leading /
             let normalizedPath = path;
             if (normalizedPath.startsWith('/src/')) {
                 normalizedPath = '/' + normalizedPath.slice(5);
@@ -95,104 +102,173 @@ function CodeView() {
         id && GetFiles();
     }, [id, GetFiles]);
 
+    /**
+     * Core function: makes a single API call to /api/gen-ai-code and processes the SSE stream.
+     * Returns { success: true, data } or { success: false, error }.
+     */
+    const callCodeGenAPI = useCallback(async (msgs, currentFilePaths, signal) => {
+        const response = await fetch('/api/gen-ai-code', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            signal,
+            body: JSON.stringify({
+                messages: msgs,
+                currentFilePaths: currentFilePaths.length > 0 ? currentFilePaths : undefined,
+                includeSupabase: buildOptions?.includeSupabase,
+                deployToVercel: buildOptions?.deployToVercel,
+            }),
+        });
+
+        // Detect server-side failures (Vercel timeout = 504, gateway errors)
+        if (!response.ok) {
+            const statusCode = response.status;
+            if (statusCode === 502 || statusCode === 504) {
+                return { success: false, error: 'Server function timed out. Retrying...', retryable: true };
+            }
+            return { success: false, error: `Server error (${statusCode})`, retryable: statusCode >= 500 };
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let finalData = null;
+        let streamError = null;
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            const chunk = decoder.decode(value);
+            const lines = chunk.split('\n');
+
+            for (const line of lines) {
+                if (line.startsWith('data: ')) {
+                    try {
+                        const data = JSON.parse(line.slice(6));
+
+                        // Keepalive ping — ignore
+                        if (data.ping) continue;
+
+                        // Retry progress from server
+                        if (data.retry && data.maxRetries) {
+                            setLoadingStatus(`AI model retry ${data.retry}/${data.maxRetries}...`);
+                        }
+
+                        // Progress update
+                        if (data.progress) {
+                            setLoadingStatus(`Generating code (${Math.round(data.progress / 1024)}KB received)...`);
+                        }
+
+                        // Final result
+                        if (data.done && data.final) {
+                            finalData = data.final;
+                        }
+
+                        // Server-side error
+                        if (data.error) {
+                            streamError = data.rawError || data.error;
+                        }
+                    } catch (_) { }
+                }
+            }
+        }
+
+        if (finalData?.files) {
+            return { success: true, data: finalData };
+        }
+
+        return {
+            success: false,
+            error: streamError || 'No valid code received from AI',
+            retryable: true,
+        };
+    }, [buildOptions]);
+
+    /**
+     * Main code generation function with client-side auto-retry.
+     */
     const GenerateAiCode = useCallback(async () => {
         setLoading(true);
-        const currentFilePaths = Object.keys(files || {}).filter(k => k.startsWith('/'));
+        setLoadingStatus('Writing code & config...');
+        retryCountRef.current = 0;
 
+        const currentFilePaths = Object.keys(files || {}).filter(k => k.startsWith('/'));
         const controller = new AbortController();
-        // Absolute max timeout: 10 minutes (safety net)
-        const absoluteTimeout = setTimeout(() => controller.abort(), 600_000);
-        // Inactivity timeout: abort if no data received for 180 seconds (3 mins)
-        const INACTIVITY_MS = 180_000;
-        let inactivityTimeout = setTimeout(() => controller.abort(), INACTIVITY_MS);
-        const resetInactivity = () => {
-            clearTimeout(inactivityTimeout);
-            inactivityTimeout = setTimeout(() => controller.abort(), INACTIVITY_MS);
-        };
+        const absoluteTimeout = setTimeout(() => controller.abort(), ABSOLUTE_TIMEOUT_MS);
+
+        let success = false;
 
         try {
-            const response = await fetch('/api/gen-ai-code', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                signal: controller.signal,
-                body: JSON.stringify({
-                    messages,
-                    currentFilePaths: currentFilePaths.length > 0 ? currentFilePaths : undefined,
-                    includeSupabase: buildOptions?.includeSupabase,
-                    deployToVercel: buildOptions?.deployToVercel,
-                }),
-            });
+            for (let clientAttempt = 0; clientAttempt < MAX_CLIENT_RETRIES; clientAttempt++) {
+                retryCountRef.current = clientAttempt;
 
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder();
-            let finalData = null;
-            let streamError = null;
+                if (clientAttempt > 0) {
+                    const delay = CLIENT_RETRY_DELAYS[clientAttempt - 1] || 5000;
+                    setLoadingStatus(`Retrying (attempt ${clientAttempt + 1}/${MAX_CLIENT_RETRIES})...`);
+                    await new Promise(r => setTimeout(r, delay));
+                }
 
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
+                try {
+                    const result = await callCodeGenAPI(messages, currentFilePaths, controller.signal);
 
-                // Data received — reset inactivity timer
-                resetInactivity();
+                    if (result.success) {
+                        // SUCCESS — apply files
+                        const processedAiFiles = preprocessFiles(result.data.files || {});
+                        const mergedFiles = { ...Lookup.DEFAULT_FILE, ...processedAiFiles };
+                        setFiles(mergedFiles);
 
-                const chunk = decoder.decode(value);
-                const lines = chunk.split('\n');
+                        await UpdateFiles({
+                            workspaceId: id,
+                            files: result.data.files
+                        });
 
-                for (const line of lines) {
-                    if (line.startsWith('data: ')) {
-                        try {
-                            const data = JSON.parse(line.slice(6));
-                            if (data.done && data.final) {
-                                finalData = data.final;
-                            }
-                            if (data.error) {
-                                streamError = data.rawError || data.error;
-                                console.warn('AI code gen error:', data.error, 'Raw:', data.rawError);
-                            }
-                        } catch (e) {
-                            // Skip invalid JSON
+                        setActiveTab('preview');
+                        success = true;
+                        console.log(`[CodeView] ✓ Code generation succeeded on client attempt ${clientAttempt + 1}`);
+                        break;
+                    } else {
+                        // FAILED — check if retryable
+                        console.warn(`[CodeView] Attempt ${clientAttempt + 1} failed: ${result.error}`);
+
+                        if (!result.retryable || clientAttempt === MAX_CLIENT_RETRIES - 1) {
+                            // Non-retryable or last attempt — show error
+                            setMessages(prev => [...prev, {
+                                role: 'ai',
+                                content: `⚠️ ${friendlyError(result.error)}`
+                            }]);
+                            break;
                         }
+                        // Otherwise loop continues to retry
                     }
+                } catch (fetchError) {
+                    if (fetchError.name === 'AbortError') {
+                        // Absolute timeout hit
+                        setMessages(prev => [...prev, {
+                            role: 'ai',
+                            content: '⚠️ The request took too long. Please try again or simplify your prompt.'
+                        }]);
+                        break;
+                    }
+
+                    console.warn(`[CodeView] Attempt ${clientAttempt + 1} fetch error:`, fetchError.message);
+
+                    if (clientAttempt === MAX_CLIENT_RETRIES - 1) {
+                        setMessages(prev => [...prev, {
+                            role: 'ai',
+                            content: `⚠️ ${friendlyError(fetchError.message)}`
+                        }]);
+                    }
+                    // Otherwise loop continues to retry
                 }
             }
 
-            if (finalData && finalData.files) {
-                const processedAiFiles = preprocessFiles(finalData.files || {});
-                // AI files spread LAST to override both defaults AND Sandpack template
-                const mergedFiles = { ...Lookup.DEFAULT_FILE, ...processedAiFiles };
-                setFiles(mergedFiles);
-
-                await UpdateFiles({
-                    workspaceId: id,
-                    files: finalData.files
-                });
-
-                setActiveTab('preview');
-            } else {
-                console.error('Code generation failed:', streamError || 'No valid files received');
-                setMessages(prev => [...prev, {
-                    role: 'ai',
-                    content: `⚠️ ${friendlyError(streamError)}` + (streamError ? `\n\n**Debug Details:**\n\`${streamError}\`` : '')
-                }]);
-            }
-        } catch (error) {
-            if (error.name === 'AbortError') {
-                console.error('Code generation timed out (inactivity or absolute limit)');
-                setMessages(prev => [...prev, {
-                    role: 'ai',
-                    content: '⚠️ The request took too long. Please try again or simplify your prompt.'
-                }]);
-            } else {
-                console.error('Error generating AI code:', error);
+            if (!success) {
+                console.error(`[CodeView] All ${MAX_CLIENT_RETRIES} client attempts failed`);
             }
         } finally {
             clearTimeout(absoluteTimeout);
-            clearTimeout(inactivityTimeout);
             setLoading(false);
         }
-    }, [messages, id, UpdateFiles, preprocessFiles, files, buildOptions, setMessages]);
+    }, [messages, id, UpdateFiles, preprocessFiles, files, buildOptions, setMessages, callCodeGenAPI]);
 
     useEffect(() => {
         if (messages?.length > 0) {
@@ -286,7 +362,6 @@ function CodeView() {
 
         useEffect(() => {
             if (status === 'running' || status === 'done') {
-                // Add a small delay to ensure the iframe has actually painted
                 const timer = setTimeout(() => setShow(false), 500);
                 return () => clearTimeout(timer);
             } else {
@@ -329,7 +404,7 @@ function CodeView() {
 
         return (
             <div className="absolute inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-in fade-in duration-200">
-                <div className="glass-strong rounded-2xl border border-red-500/20 bg-[#0a0a0a]/90 p-6 shadow-2xl max-w-md w-full animate-in zoom-in-95 duration-200">
+                <div className="glass-strong rounded-2xl border border-red-500/20 bg-[#0a0a0a]/90 p-5 lg:p-6 shadow-2xl max-w-md w-full animate-in zoom-in-95 duration-200">
                     <div className="flex flex-col items-center text-center gap-4">
                         <div className="h-12 w-12 rounded-full bg-red-500/10 flex items-center justify-center border border-red-500/20 shadow-inner shrink-0">
                             <Rocket className="h-6 w-6 text-red-500 rotate-180" />
@@ -347,7 +422,6 @@ function CodeView() {
                         </div>
 
                         <div className="flex w-full gap-3 mt-2">
-                            {/* Add a dismiss/retry button if needed, but 'Fix with AI' is the main action */}
                             <button
                                 onClick={() => {
                                     setMessages(prev => [...prev, {
@@ -355,7 +429,7 @@ function CodeView() {
                                         content: `The app has a runtime error:\n\n${errorMsg}\n\nPlease fix this code.`
                                     }]);
                                 }}
-                                className="flex-1 flex items-center justify-center gap-2 bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-500 hover:to-rose-500 text-white px-4 py-2.5 rounded-xl transition-all font-medium shadow-lg shadow-red-600/20 hover:scale-[1.02] active:scale-[0.98]"
+                                className="flex-1 flex items-center justify-center gap-2 bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-500 hover:to-rose-500 text-white px-4 py-3 rounded-xl transition-all font-medium shadow-lg shadow-red-600/20 hover:scale-[1.02] active:scale-[0.98] min-h-[48px]"
                             >
                                 <Sparkles className="h-4 w-4" />
                                 Fix with AI
@@ -369,7 +443,7 @@ function CodeView() {
 
     const PreviewWithErrorHandler = () => (
         <SandpackPreview
-            style={{ height: '80vh' }}
+            style={{ height: '100%' }}
             showNavigator={true}
             showOpenInCodeSandbox={false}
             showRefreshButton={true}
@@ -377,50 +451,50 @@ function CodeView() {
     );
 
     return (
-        <div className='relative h-full bg-[#0a0a0a] border border-white/[0.06] rounded-2xl overflow-hidden flex flex-col'>
+        <div className='relative h-full bg-[#0a0a0a] border-0 lg:border border-white/[0.06] rounded-none lg:rounded-2xl overflow-hidden flex flex-col'>
             {/* Header with tabs and actions */}
-            <div className='flex items-center justify-between px-3 sm:px-4 py-2.5 border-b border-white/[0.06]'>
+            <div className='flex items-center justify-between px-2 lg:px-4 py-2 lg:py-2.5 border-b border-white/[0.06]'>
                 {/* Pill Tab Switcher */}
                 <div className='flex items-center gap-0.5 p-1 rounded-xl glass'>
                     <button
                         onClick={() => setActiveTab('code')}
-                        className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-[13px] font-medium transition-all duration-200 ${activeTab === 'code'
+                        className={`flex items-center gap-1.5 px-3 lg:px-3.5 py-2 rounded-lg text-[13px] font-medium transition-all duration-200 min-h-[40px] ${activeTab === 'code'
                             ? 'bg-white/[0.1] text-white shadow-sm'
                             : 'text-zinc-500 hover:text-zinc-300'
                             }`}
                     >
-                        <Code className="h-3.5 w-3.5" />
-                        <span className="hidden sm:inline">Code</span>
+                        <Code className="h-4 w-4" />
+                        <span>Code</span>
                     </button>
                     <button
                         onClick={() => setActiveTab('preview')}
-                        className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-[13px] font-medium transition-all duration-200 ${activeTab === 'preview'
+                        className={`flex items-center gap-1.5 px-3 lg:px-3.5 py-2 rounded-lg text-[13px] font-medium transition-all duration-200 min-h-[40px] ${activeTab === 'preview'
                             ? 'bg-white/[0.1] text-white shadow-sm'
                             : 'text-zinc-500 hover:text-zinc-300'
                             }`}
                     >
-                        <Eye className="h-3.5 w-3.5" />
-                        <span className="hidden sm:inline">Preview</span>
+                        <Eye className="h-4 w-4" />
+                        <span>Preview</span>
                     </button>
                 </div>
 
                 {/* Actions */}
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1.5 lg:gap-2">
                     <button
                         onClick={downloadFiles}
-                        className="flex items-center gap-1.5 text-zinc-500 hover:text-white px-2.5 py-1.5 rounded-lg hover:bg-white/[0.05] transition-all text-[13px] font-medium"
+                        className="flex items-center gap-1.5 text-zinc-500 hover:text-white px-2 lg:px-2.5 py-2 rounded-lg hover:bg-white/[0.05] transition-all text-[13px] font-medium min-h-[40px] min-w-[40px] justify-center"
                         title="Download Project"
                     >
-                        <Download className="h-3.5 w-3.5" />
-                        <span className="hidden sm:inline">Export</span>
+                        <Download className="h-4 w-4" />
+                        <span className="hidden lg:inline">Export</span>
                     </button>
                     <button
                         onClick={deployToVercel}
                         disabled={deploying}
-                        className="flex items-center gap-1.5 bg-gradient-to-r from-violet-600 to-fuchsia-600 hover:from-violet-500 hover:to-fuchsia-500 text-white px-3.5 py-1.5 rounded-lg transition-all shadow-lg shadow-violet-600/20 text-[13px] font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                        className="flex items-center gap-1.5 bg-gradient-to-r from-violet-600 to-fuchsia-600 hover:from-violet-500 hover:to-fuchsia-500 text-white px-3 lg:px-3.5 py-2 rounded-lg transition-all shadow-lg shadow-violet-600/20 text-[13px] font-medium disabled:opacity-50 disabled:cursor-not-allowed min-h-[40px] active:scale-95"
                     >
-                        {deploying ? <Loader2Icon className="h-3.5 w-3.5 animate-spin" /> : <Rocket className="h-3.5 w-3.5" />}
-                        <span className="hidden sm:inline">Deploy</span>
+                        {deploying ? <Loader2Icon className="h-4 w-4 animate-spin" /> : <Rocket className="h-4 w-4" />}
+                        <span className="hidden lg:inline">Deploy</span>
                     </button>
                 </div>
             </div>
@@ -447,7 +521,7 @@ function CodeView() {
                     <SandpackErrorListener />
                     <SandpackLayout style={{ height: '100%', border: 'none', borderRadius: 0 }}>
                         <div className={`h-full w-full ${activeTab === 'code' ? 'flex' : 'hidden'}`}>
-                            <div className="hidden sm:block">
+                            <div className="hidden lg:block">
                                 <SandpackFileExplorer style={{ height: '100%', borderRight: '1px solid rgba(255,255,255,0.06)' }} />
                             </div>
                             <SandpackCodeEditor
@@ -476,17 +550,23 @@ function CodeView() {
                 {/* Loading Overlay */}
                 {loading && (
                     <div className='absolute inset-0 bg-[#0a0a0a]/90 backdrop-blur-sm flex flex-col items-center justify-center z-50 animate-in fade-in duration-300'>
-                        <div className="glass-strong p-8 rounded-2xl flex flex-col items-center gap-5 text-center max-w-sm mx-4">
+                        <div className="glass-strong p-6 lg:p-8 rounded-2xl flex flex-col items-center gap-4 lg:gap-5 text-center max-w-sm mx-4">
                             <div className="relative">
                                 <div className="absolute inset-0 bg-violet-500 blur-2xl opacity-20 rounded-full" />
-                                <Loader2Icon className='relative animate-spin h-10 w-10 text-violet-400' />
+                                <Loader2Icon className='relative animate-spin h-8 lg:h-10 w-8 lg:w-10 text-violet-400' />
                             </div>
                             <div>
                                 <h2 className='text-base font-semibold text-white mb-1'>Building your app</h2>
-                                <p className="text-sm text-zinc-500">Writing code & config...</p>
+                                <p className="text-sm text-zinc-500">{loadingStatus}</p>
                                 <p className="text-xs text-zinc-600 mt-1 tabular-nums">
                                     {Math.floor(elapsedTime / 60)}:{String(elapsedTime % 60).padStart(2, '0')} elapsed
                                 </p>
+                                {retryCountRef.current > 0 && (
+                                    <p className="text-xs text-amber-500/80 mt-1.5 flex items-center justify-center gap-1">
+                                        <RefreshCw className="h-3 w-3" />
+                                        Auto-retrying ({retryCountRef.current + 1}/{MAX_CLIENT_RETRIES})
+                                    </p>
+                                )}
                             </div>
                             <div className="flex gap-1.5">
                                 <div className="w-1.5 h-1.5 rounded-full bg-violet-400 typing-dot" />

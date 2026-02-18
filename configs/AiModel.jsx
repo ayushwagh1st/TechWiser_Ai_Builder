@@ -1,13 +1,12 @@
 /**
- * AiModel.jsx — Production-ready OpenRouter integration
+ * AiModel.jsx — Production-ready OpenRouter integration (v2 — bulletproof)
  *
- * Uses the OpenRouter REST API directly (OpenAI-compatible).
- *   • Startup warmup: pre-probes all key+model combos, builds a ready-queue
- *   • Multiple API keys with automatic failover on rate-limit / credit exhaustion
- *   • Model-level fallback with priority for pre-validated combos
- *   • Streaming via Server-Sent Events (SSE)
- *   • Non-streaming calls for prompt enhancement
- *   • Periodic re-warmup every 5 minutes
+ * Key improvements over v1:
+ *   • Per-model streaming timeout (90s) — if a model hangs, skip to next
+ *   • No warmup probing — cold start is instant, models tried on-demand
+ *   • Smarter model ordering — fastest/most-reliable models first
+ *   • Aggressive failover across all key×model combos
+ *   • AbortController-based timeouts on every streaming call
  */
 
 import Prompt from "@/data/Prompt";
@@ -31,14 +30,16 @@ function collectApiKeys() {
 const API_KEYS = collectApiKeys();
 
 if (API_KEYS.length === 0) {
-  console.warn("[TechWiser] No OPENROUTER_API_KEY found. AI will not work.");
+  console.warn("[TechWiser] ⚠ No OPENROUTER_API_KEY found. AI will not work.");
 } else {
   console.log(`[TechWiser] Loaded ${API_KEYS.length} OpenRouter API key(s)`);
 }
 
+// --- Key Health Tracking ---------------------------------------------
+
 const keyStatus = API_KEYS.map(() => ({ exhausted: false, exhaustedAt: 0, failCount: 0 }));
-const COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes (was 10)
-const EXHAUST_THRESHOLD = 3; // consecutive failures needed before marking exhausted
+const COOLDOWN_MS = 3 * 60 * 1000; // 3 min cooldown (reduced from 5)
+const EXHAUST_THRESHOLD = 3;
 
 function getActiveKeyIndex() {
   const now = Date.now();
@@ -50,7 +51,7 @@ function getActiveKeyIndex() {
       return i;
     }
   }
-  // All keys exhausted — reset the oldest one
+  // All exhausted — reset oldest
   let oldest = 0;
   for (let i = 1; i < keyStatus.length; i++) {
     if (keyStatus[i].exhaustedAt < keyStatus[oldest].exhaustedAt) oldest = i;
@@ -65,9 +66,7 @@ function markKeyExhausted(idx) {
   if (keyStatus[idx].failCount >= EXHAUST_THRESHOLD) {
     keyStatus[idx].exhausted = true;
     keyStatus[idx].exhaustedAt = Date.now();
-    console.log(`[Keys] Key #${idx + 1} marked exhausted after ${keyStatus[idx].failCount} consecutive failures`);
-  } else {
-    console.log(`[Keys] Key #${idx + 1} fail count: ${keyStatus[idx].failCount}/${EXHAUST_THRESHOLD}`);
+    console.log(`[Keys] Key #${idx + 1} marked exhausted after ${keyStatus[idx].failCount} failures`);
   }
 }
 
@@ -75,327 +74,229 @@ function resetKeyFailCount(idx) {
   keyStatus[idx].failCount = 0;
 }
 
-/**
- * Only treat truly key-level exhaustion errors as rate limits.
- * Model-specific errors, server errors, etc. should NOT mark a key as exhausted.
- */
 function isRateLimitError(status, body) {
-  // HTTP 429 is the definitive rate-limit status
-  if (status === 429) return true;
-  // HTTP 402 = payment required (credits exhausted)
-  if (status === 402) return true;
-
+  if (status === 429 || status === 402) return true;
   const msg = (typeof body === "string" ? body : JSON.stringify(body || "")).toLowerCase();
-
-  // Only match phrases that specifically indicate KEY exhaustion, not model errors
   if (msg.includes("rate limit") && !msg.includes("model")) return true;
-  if (msg.includes("credits") && (msg.includes("insufficient") || msg.includes("exhausted") || msg.includes("run out"))) return true;
+  if (msg.includes("credits") && (msg.includes("insufficient") || msg.includes("exhausted"))) return true;
   if (msg.includes("quota") && (msg.includes("exceeded") || msg.includes("exhausted"))) return true;
   if (msg.includes("billing") || msg.includes("payment required")) return true;
-
   return false;
 }
 
-// --- Model Lists -----------------------------------------------------
+// --- Model Lists (ordered by reliability for code generation) --------
 
-// Standard models for code generation — verified OpenRouter slugs
 const MODELS = [
-  "deepseek/deepseek-r1-0528:free",
-  "deepseek/deepseek-chat-v3-0324:free",
-  "meta-llama/llama-3.3-70b-instruct:free",
-  "mistralai/devstral-2512:free",
-  "stepfun/step-3.5-flash:free",
+  "deepseek/deepseek-chat-v3-0324:free",      // Fast, good at code
+  "deepseek/deepseek-r1-0528:free",            // Reasoning model, slower but better quality
+  "mistralai/devstral-2512:free",              // Code-focused
+  "meta-llama/llama-3.3-70b-instruct:free",    // Reliable fallback
+  "google/gemini-2.0-flash-exp:free",          // Fast
   "google/gemma-3-27b-it:free",
-  "google/gemini-2.0-flash-exp:free",
+  "stepfun/step-3.5-flash:free",
   "nvidia/nemotron-3-nano-30b-a3b:free",
 ];
 
-// Lightweight models for planning
 const PLANNING_MODELS = [
-  "deepseek/deepseek-r1-0528:free",
+  "deepseek/deepseek-chat-v3-0324:free",
+  "google/gemini-2.0-flash-exp:free",
   "stepfun/step-3.5-flash:free",
-  "google/gemma-3-27b-it:free",
 ];
 
-// --- Warmup / Ready-Queue --------------------------------------------
-// On startup, probes every key+model with a tiny non-streaming request.
-// Builds a sorted ready-queue: fastest & available combos first.
+// --- Per-Model Timeout Tracking --------------------------------------
+// Track which models recently failed so we skip them on subsequent attempts
 
-/**
- * @typedef {{ keyIdx: number, model: string, latencyMs: number }} ReadyCombo
- */
+const modelHealth = new Map(); // model -> { lastFail: timestamp, consecutiveFails: number }
 
-/** @type {ReadyCombo[]} */
-let readyQueue = [];
-let warmupDone = false;
-let warmupPromise = null;
-const WARMUP_INTERVAL_MS = 5 * 60 * 1000; // Re-probe every 5 min
+function isModelHealthy(model) {
+  const health = modelHealth.get(model);
+  if (!health) return true;
+  // If model failed recently (last 2 min) and has 2+ consecutive fails, skip it
+  if (health.consecutiveFails >= 2 && Date.now() - health.lastFail < 2 * 60 * 1000) {
+    return false;
+  }
+  return true;
+}
 
-/**
- * Probe a single key+model combo. Returns latency in ms or -1 on failure.
- * Uses minimal tokens (max_tokens: 1) to be fast and cheap.
- */
-async function probeCombo(keyIdx, model) {
-  const start = Date.now();
+function markModelFailed(model) {
+  const health = modelHealth.get(model) || { lastFail: 0, consecutiveFails: 0 };
+  health.lastFail = Date.now();
+  health.consecutiveFails++;
+  modelHealth.set(model, health);
+}
+
+function markModelSuccess(model) {
+  modelHealth.set(model, { lastFail: 0, consecutiveFails: 0 });
+}
+
+// --- Core: Streaming fetch with per-model timeout --------------------
+
+const PER_MODEL_TIMEOUT_MS = 90_000;      // 90s per model attempt
+const FIRST_CHUNK_TIMEOUT_MS = 30_000;     // 30s to get first chunk (or model is dead)
+
+async function* streamChatRaw(apiKey, model, messages, options = {}) {
+  const controller = new AbortController();
+
+  // Overall per-model timeout
+  const overallTimer = setTimeout(() => controller.abort(), PER_MODEL_TIMEOUT_MS);
+
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8000); // 8s timeout
+    const body = { model, messages, stream: true };
+    if (options.maxTokens) body.max_tokens = options.maxTokens;
+    if (options.jsonMode) body.response_format = { type: "json_object" };
 
     const res = await fetch(OPENROUTER_BASE, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${API_KEYS[keyIdx]}`,
+        Authorization: `Bearer ${apiKey}`,
         "HTTP-Referer": siteUrl,
         "X-Title": siteName,
       },
-      body: JSON.stringify({
-        model,
-        messages: [{ role: "user", content: "Hi" }],
-        max_tokens: 1,
-      }),
+      body: JSON.stringify(body),
       signal: controller.signal,
     });
 
-    clearTimeout(timeout);
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => "");
+      const err = new Error(`HTTP ${res.status}: ${errBody.slice(0, 300)}`);
+      err.status = res.status;
+      err.body = errBody;
+      throw err;
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    let gotFirstChunk = false;
+
+    // First-chunk timeout: if no data in 30s, model is stuck
+    let firstChunkTimer = setTimeout(() => {
+      if (!gotFirstChunk) controller.abort();
+    }, FIRST_CHUNK_TIMEOUT_MS);
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      if (!gotFirstChunk) {
+        gotFirstChunk = true;
+        clearTimeout(firstChunkTimer);
+      }
+
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split("\n");
+      buf = lines.pop();
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith(":")) continue;
+        if (!trimmed.startsWith("data: ")) continue;
+
+        const payload = trimmed.slice(6);
+        if (payload === "[DONE]") return;
+
+        try {
+          const parsed = JSON.parse(payload);
+          const delta = parsed?.choices?.[0]?.delta?.content;
+          if (delta) yield delta;
+        } catch (_) { }
+      }
+    }
+  } finally {
+    clearTimeout(overallTimer);
+  }
+}
+
+async function chatCompletionRaw(apiKey, model, messages) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 60_000); // 60s for non-streaming
+
+  try {
+    const res = await fetch(OPENROUTER_BASE, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+        "HTTP-Referer": siteUrl,
+        "X-Title": siteName,
+      },
+      body: JSON.stringify({ model, messages }),
+      signal: controller.signal,
+    });
 
     if (!res.ok) {
-      // Warmup probes should NOT mark keys as exhausted.
-      // A failed probe might be a model-specific issue, not a key issue.
-      return -1;
+      const errBody = await res.text().catch(() => "");
+      const err = new Error(`HTTP ${res.status}: ${errBody.slice(0, 300)}`);
+      err.status = res.status;
+      err.body = errBody;
+      throw err;
     }
 
-    // Consume the response to close the connection
-    await res.json().catch(() => { });
-    return Date.now() - start;
-  } catch (_) {
-    return -1;
+    const data = await res.json();
+    return data?.choices?.[0]?.message?.content || "";
+  } finally {
+    clearTimeout(timer);
   }
 }
 
-/**
- * Run warmup — probes all key+model combos in parallel.
- * Populates readyQueue sorted by latency (fastest first).
- */
-async function runWarmup() {
-  if (API_KEYS.length === 0) return;
-
-  const startTime = Date.now();
-  console.log("[Warmup] Starting health check...");
-
-  // Probe a subset of models per key to avoid flooding (top 5 fastest + planning models)
-  const probeModels = [...new Set([...MODELS.slice(0, 5), ...PLANNING_MODELS])];
-
-  const probes = [];
-  for (let keyIdx = 0; keyIdx < API_KEYS.length; keyIdx++) {
-    for (const model of probeModels) {
-      probes.push(
-        probeCombo(keyIdx, model).then((latencyMs) => ({
-          keyIdx,
-          model,
-          latencyMs,
-        }))
-      );
-    }
-  }
-
-  const results = await Promise.all(probes);
-
-  // Filter successful combos and sort by latency
-  const alive = results
-    .filter((r) => r.latencyMs >= 0)
-    .sort((a, b) => a.latencyMs - b.latencyMs);
-
-  readyQueue = alive;
-  warmupDone = true;
-
-  const elapsed = Date.now() - startTime;
-  const aliveKeys = new Set(alive.map((r) => r.keyIdx));
-  const aliveModels = new Set(alive.map((r) => r.model));
-
-  console.log(
-    `[Warmup] Done in ${elapsed}ms — ${alive.length} combos ready ` +
-    `(${aliveKeys.size} key(s), ${aliveModels.size} model(s))`
-  );
-
-  if (alive.length > 0) {
-    const top3 = alive.slice(0, 3).map((r) =>
-      `  Key #${r.keyIdx + 1} → ${r.model} (${r.latencyMs}ms)`
-    );
-    console.log("[Warmup] Top picks:\n" + top3.join("\n"));
-  } else {
-    console.warn("[Warmup] ⚠ No combos available — will try all on first request");
-  }
-}
-
-// Fire warmup on module load (non-blocking)
-if (API_KEYS.length > 0) {
-  warmupPromise = runWarmup().catch((e) =>
-    console.warn("[Warmup] Failed:", e.message)
-  );
-
-  // Re-warmup periodically
-  setInterval(() => {
-    runWarmup().catch((e) => console.warn("[Re-Warmup] Failed:", e.message));
-  }, WARMUP_INTERVAL_MS);
-}
+// --- Fallback Engine (no warmup needed) ------------------------------
 
 /**
- * Wait for warmup to finish (with timeout). Non-blocking after first call.
- */
-async function ensureWarmedUp() {
-  if (warmupDone || !warmupPromise) return;
-  // Wait at most 10s for warmup — don't block user request forever
-  await Promise.race([
-    warmupPromise,
-    new Promise((resolve) => setTimeout(resolve, 10000)),
-  ]);
-}
-
-/**
- * Get an ordered list of key+model combos to try.
- * Prioritizes pre-validated combos from warmup, then falls back to all.
+ * Build all key×model combos, skip unhealthy models/keys.
  */
 function getOrderedCombos(models) {
   const combos = [];
-  const seen = new Set();
-
-  // 1. Pre-validated combos from warmup (only for requested models)
-  const modelSet = new Set(models);
-  for (const combo of readyQueue) {
-    if (!modelSet.has(combo.model)) continue;
-    const key = `${combo.keyIdx}:${combo.model}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    combos.push(combo);
+  for (const model of models) {
+    if (!isModelHealthy(model)) {
+      console.log(`[AI] Skipping temporarily unhealthy model: ${model}`);
+      continue;
+    }
+    for (let keyIdx = 0; keyIdx < API_KEYS.length; keyIdx++) {
+      combos.push({ keyIdx, model });
+    }
   }
 
-  // 2. Fill in ALL key×model combos not yet covered (cartesian product)
-  //    This ensures every model gets tried with every key before giving up.
-  for (const model of models) {
-    for (let keyIdx = 0; keyIdx < API_KEYS.length; keyIdx++) {
-      const key = `${keyIdx}:${model}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      combos.push({ keyIdx, model, latencyMs: 9999 });
+  // If all models were unhealthy, try them all anyway (last resort)
+  if (combos.length === 0) {
+    console.warn("[AI] All models unhealthy — trying everything");
+    for (const model of models) {
+      for (let keyIdx = 0; keyIdx < API_KEYS.length; keyIdx++) {
+        combos.push({ keyIdx, model });
+      }
     }
   }
 
   return combos;
 }
 
-// --- Core: Streaming fetch -------------------------------------------
-
-async function* streamChatRaw(apiKey, model, messages, options = {}) {
-  const body = { model, messages, stream: true };
-  // Set max_tokens to prevent truncation (critical for code generation)
-  if (options.maxTokens) body.max_tokens = options.maxTokens;
-  // Request JSON mode for models that support it
-  if (options.jsonMode) body.response_format = { type: "json_object" };
-
-  const res = await fetch(OPENROUTER_BASE, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-      "HTTP-Referer": siteUrl,
-      "X-Title": siteName,
-    },
-    body: JSON.stringify(body),
-  });
-
-  if (!res.ok) {
-    const errBody = await res.text().catch(() => "");
-    const err = new Error(`HTTP ${res.status}: ${errBody.slice(0, 300)}`);
-    err.status = res.status;
-    err.body = errBody;
-    throw err;
-  }
-
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buf = "";
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-
-    buf += decoder.decode(value, { stream: true });
-    const lines = buf.split("\n");
-    buf = lines.pop();
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith(":")) continue;
-      if (!trimmed.startsWith("data: ")) continue;
-
-      const payload = trimmed.slice(6);
-      if (payload === "[DONE]") return;
-
-      try {
-        const parsed = JSON.parse(payload);
-        const delta = parsed?.choices?.[0]?.delta?.content;
-        if (delta) yield delta;
-      } catch (_) { }
-    }
-  }
-}
-
-async function chatCompletionRaw(apiKey, model, messages) {
-  const res = await fetch(OPENROUTER_BASE, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-      "HTTP-Referer": siteUrl,
-      "X-Title": siteName,
-    },
-    body: JSON.stringify({ model, messages }),
-  });
-
-  if (!res.ok) {
-    const errBody = await res.text().catch(() => "");
-    const err = new Error(`HTTP ${res.status}: ${errBody.slice(0, 300)}`);
-    err.status = res.status;
-    err.body = errBody;
-    throw err;
-  }
-
-  const data = await res.json();
-  return data?.choices?.[0]?.message?.content || "";
-}
-
-// --- Fallback Engine (warmup-aware) ----------------------------------
-
 /**
- * Try combos from the ready-queue first, then fall back.
- * Returns an async iterable of text deltas.
+ * Try key×model combos until one works. Per-model timeout ensures
+ * we never wait more than 90s for a single model.
  */
 async function callWithFallback(messages, models, streamOptions = {}) {
   if (API_KEYS.length === 0) {
-    throw new Error("No OpenRouter API keys configured. Set OPENROUTER_API_KEY in .env.local");
+    throw new Error("No OpenRouter API keys configured. Set OPENROUTER_API_KEY in environment variables.");
   }
-
-  // Wait for warmup (non-blocking after first call)
-  await ensureWarmedUp();
 
   const combos = getOrderedCombos(models);
   let lastError;
+  let attemptCount = 0;
 
   for (const { keyIdx, model } of combos) {
-    // Skip exhausted keys
     if (keyStatus[keyIdx].exhausted) continue;
+    attemptCount++;
 
     try {
-      console.log(`[AI] Key #${keyIdx + 1} → ${model}`);
+      console.log(`[AI] Attempt ${attemptCount}: Key #${keyIdx + 1} → ${model}`);
       const gen = streamChatRaw(API_KEYS[keyIdx], model, messages, streamOptions);
 
-      // Probe first chunk
+      // Probe first chunk to verify stream works
       const reader = gen[Symbol.asyncIterator]();
       const first = await reader.next();
 
       if (first.done) {
-        throw new Error("Empty response from model (stream ended immediately)");
+        throw new Error("Empty response (stream ended immediately)");
       }
 
       async function* replayStream() {
@@ -407,32 +308,37 @@ async function callWithFallback(messages, models, streamOptions = {}) {
         }
       }
 
-      console.log(`[AI] Key #${keyIdx + 1} → ${model} ✓`);
-      resetKeyFailCount(keyIdx); // Success — reset fail counter
+      console.log(`[AI] ✓ Key #${keyIdx + 1} → ${model}`);
+      resetKeyFailCount(keyIdx);
+      markModelSuccess(model);
       return replayStream();
     } catch (error) {
-      console.warn(`[AI] Key #${keyIdx + 1} → ${model} ✗: ${error.message?.slice(0, 200)}`);
+      const reason = error.name === 'AbortError' ? 'TIMEOUT' : error.message?.slice(0, 150);
+      console.warn(`[AI] ✗ Key #${keyIdx + 1} → ${model}: ${reason}`);
       lastError = error;
+      markModelFailed(model);
 
       if (isRateLimitError(error.status, error.body)) {
         markKeyExhausted(keyIdx);
       }
+
+      // Small delay between attempts to avoid hammering
+      if (attemptCount < combos.length) {
+        await new Promise(r => setTimeout(r, 500));
+      }
     }
   }
 
-  // All combos failed
   if (lastError && isRateLimitError(lastError.status, lastError.body)) {
-    throw new Error("Our AI servers are busy right now. Please wait a moment and try again.");
+    throw new Error("AI servers are busy. Please wait a moment and try again.");
   }
-  throw lastError || new Error("All models and API keys failed");
+  throw lastError || new Error("All models and API keys failed. Please try again.");
 }
 
 async function callNonStreamingWithFallback(messages, models) {
   if (API_KEYS.length === 0) {
     throw new Error("No OpenRouter API keys configured.");
   }
-
-  await ensureWarmedUp();
 
   const combos = getOrderedCombos(models);
   let lastError;
@@ -444,25 +350,26 @@ async function callNonStreamingWithFallback(messages, models) {
       console.log(`[AI-NS] Key #${keyIdx + 1} → ${model}`);
       const content = await chatCompletionRaw(API_KEYS[keyIdx], model, messages);
       if (!content) throw new Error("Empty response");
-      console.log(`[AI-NS] Key #${keyIdx + 1} → ${model} ✓`);
-      resetKeyFailCount(keyIdx); // Success — reset fail counter
+      console.log(`[AI-NS] ✓ Key #${keyIdx + 1} → ${model}`);
+      resetKeyFailCount(keyIdx);
+      markModelSuccess(model);
       return content;
     } catch (error) {
-      console.warn(`[AI-NS] Key #${keyIdx + 1} → ${model} ✗: ${error.message?.slice(0, 200)}`);
+      console.warn(`[AI-NS] ✗ Key #${keyIdx + 1} → ${model}: ${error.message?.slice(0, 150)}`);
       lastError = error;
+      markModelFailed(model);
 
       if (isRateLimitError(error.status, error.body)) {
         markKeyExhausted(keyIdx);
-        // Add a small delay before retrying to respect rate limits
-        await new Promise(resolve => setTimeout(resolve, 1500));
+        await new Promise(r => setTimeout(r, 1000));
       }
     }
   }
 
   if (lastError && isRateLimitError(lastError.status, lastError.body)) {
-    throw new Error("Our AI servers are busy right now. Please wait a moment and try again.");
+    throw new Error("AI servers are busy. Please wait a moment and try again.");
   }
-  throw lastError || new Error("All models and API keys failed");
+  throw lastError || new Error("All models failed.");
 }
 
 // --- Exported API ----------------------------------------------------

@@ -1,0 +1,19 @@
+# Netlify configuration for TechWiser AI Builder (Next.js)
+
+[build]
+  command = "npm run build"
+  publish = ".next"
+
+# Use the Next.js runtime plugin
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
+
+# Extend serverless function timeout (requires Netlify Pro for >10s)
+# Max is 26s on Pro — code generation may still time out for complex prompts
+[functions]
+  node_bundler = "esbuild"
+
+# Set the function timeout to the maximum allowed (in seconds)
+# Free plan: 10s, Pro plan: 26s
+[functions."*"]
+  timeout = 26

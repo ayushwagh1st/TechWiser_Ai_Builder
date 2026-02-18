@@ -158,7 +158,7 @@ function ChatView() {
     }, []);
 
     return (
-        <div className="relative h-full flex flex-col bg-[#0a0a0a] rounded-2xl overflow-hidden border border-white/[0.06]">
+        <div className="relative h-full flex flex-col bg-[#0a0a0a] rounded-none lg:rounded-2xl overflow-hidden border-0 lg:border border-white/[0.06]">
             {/* Error Popup Modal */}
             {previewError && showErrorPopup && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm" onClick={dismissErrorPopup}>
@@ -171,7 +171,7 @@ function ChatView() {
                                 <AlertCircle className="h-5 w-5" />
                             </div>
                             <h3 className="font-semibold text-red-200 flex-1 text-sm">Preview error detected</h3>
-                            <button onClick={dismissErrorPopup} className="p-1.5 rounded-lg text-zinc-400 hover:text-white hover:bg-white/[0.05] transition-colors">
+                            <button onClick={dismissErrorPopup} className="p-2 rounded-lg text-zinc-400 hover:text-white hover:bg-white/[0.05] transition-colors min-w-[44px] min-h-[44px] flex items-center justify-center">
                                 <X className="h-4 w-4" />
                             </button>
                         </div>
@@ -185,13 +185,13 @@ function ChatView() {
                             <div className="flex gap-3 justify-end">
                                 <button
                                     onClick={dismissErrorPopup}
-                                    className="px-4 py-2 rounded-xl text-sm font-medium text-zinc-400 hover:text-white hover:bg-white/[0.05] transition-colors"
+                                    className="px-4 py-2.5 rounded-xl text-sm font-medium text-zinc-400 hover:text-white hover:bg-white/[0.05] transition-colors min-h-[44px]"
                                 >
                                     Dismiss
                                 </button>
                                 <button
                                     onClick={onFixPreviewError}
-                                    className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-red-500 to-rose-500 hover:from-red-400 hover:to-rose-400 text-white text-sm font-medium transition-all shadow-lg shadow-red-500/20"
+                                    className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-red-500 to-rose-500 hover:from-red-400 hover:to-rose-400 text-white text-sm font-medium transition-all shadow-lg shadow-red-500/20 min-h-[44px] active:scale-95"
                                 >
                                     <Wand2 className="h-4 w-4" />
                                     Fix it for me
@@ -202,18 +202,18 @@ function ChatView() {
                 </div>
             )}
 
-            {/* Chat Header */}
-            <div className="flex items-center gap-3 px-4 py-3 border-b border-white/[0.06]">
+            {/* Chat Header — compact on mobile */}
+            <div className="flex items-center gap-3 px-4 py-2 lg:py-3 border-b border-white/[0.06]">
                 <div className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
                 <span className="text-[13px] font-medium text-zinc-400">Chat</span>
             </div>
 
             {/* Messages Area */}
-            <div className="flex-1 overflow-y-auto px-4 py-4 hide-scrollbar">
-                <div className="space-y-4">
+            <div className="flex-1 overflow-y-auto px-3 lg:px-4 py-3 lg:py-4 hide-scrollbar">
+                <div className="space-y-3 lg:space-y-4">
                     {/* Empty State */}
                     {(!messages || messages.length === 0) && (
-                        <div className="flex flex-col items-center justify-center h-full min-h-[300px] text-center px-4">
+                        <div className="flex flex-col items-center justify-center h-full min-h-[250px] lg:min-h-[300px] text-center px-4">
                             <div className="p-4 rounded-2xl glass mb-4">
                                 <Wand2 className="h-6 w-6 text-violet-400" />
                             </div>
@@ -231,7 +231,7 @@ function ChatView() {
                         <div className="flex justify-center animate-in fade-in slide-in-from-top-2">
                             <button
                                 onClick={onFixPreviewError}
-                                className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-red-500/10 border border-red-500/20 text-red-400 text-xs font-medium hover:bg-red-500/20 transition-all"
+                                className="inline-flex items-center gap-2 px-3.5 py-2 rounded-full bg-red-500/10 border border-red-500/20 text-red-400 text-xs font-medium hover:bg-red-500/20 transition-all min-h-[44px]"
                             >
                                 <AlertCircle className="h-3.5 w-3.5" />
                                 Fix preview error
@@ -259,11 +259,11 @@ function ChatView() {
                 </div>
             </div>
 
-            {/* Input Area */}
-            <div className="p-2 sm:p-3 border-t border-white/[0.06]">
+            {/* Input Area — sticky with safe-area padding on mobile */}
+            <div className="p-2 lg:p-3 border-t border-white/[0.06] pb-safe">
                 {/* Build Options */}
                 <div className="flex flex-wrap gap-1.5 mb-2 px-1">
-                    <label className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium cursor-pointer transition-all border ${buildOptions?.includeSupabase
+                    <label className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium cursor-pointer transition-all border min-h-[36px] ${buildOptions?.includeSupabase
                         ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
                         : 'bg-transparent border-white/[0.06] text-zinc-600 hover:text-zinc-400 hover:bg-white/[0.03]'
                         }`}>
@@ -273,10 +273,10 @@ function ChatView() {
                             checked={buildOptions?.includeSupabase ?? false}
                             onChange={(e) => setBuildOptions?.((prev) => ({ ...(prev || {}), includeSupabase: e.target.checked }))}
                         />
-                        <Database className="h-3 w-3" />
+                        <Database className="h-3.5 w-3.5" />
                         Supabase
                     </label>
-                    <label className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium cursor-pointer transition-all border ${buildOptions?.deployToVercel
+                    <label className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium cursor-pointer transition-all border min-h-[36px] ${buildOptions?.deployToVercel
                         ? 'bg-sky-500/10 border-sky-500/20 text-sky-400'
                         : 'bg-transparent border-white/[0.06] text-zinc-600 hover:text-zinc-400 hover:bg-white/[0.03]'
                         }`}>
@@ -286,7 +286,7 @@ function ChatView() {
                             checked={buildOptions?.deployToVercel ?? false}
                             onChange={(e) => setBuildOptions?.((prev) => ({ ...(prev || {}), deployToVercel: e.target.checked }))}
                         />
-                        <Rocket className="h-3 w-3" />
+                        <Rocket className="h-3.5 w-3.5" />
                         Vercel
                     </label>
                 </div>
@@ -306,26 +306,26 @@ function ChatView() {
                                     if (userInput.trim()) onGenerate(userInput);
                                 }
                             }}
-                            className="w-full bg-transparent text-[14px] text-zinc-100 pl-4 pr-12 py-3 focus:ring-0 outline-none resize-none min-h-[44px] max-h-[120px] placeholder-zinc-600"
+                            className="w-full bg-transparent text-[14px] text-zinc-100 pl-4 pr-14 py-3 focus:ring-0 outline-none resize-none min-h-[48px] max-h-[120px] placeholder-zinc-600"
                             rows={1}
                         />
                         <div className="absolute right-2 bottom-2">
                             {userInput.trim() ? (
                                 <button
                                     onClick={() => onGenerate(userInput)}
-                                    className="p-2 rounded-lg bg-gradient-to-r from-violet-600 to-fuchsia-600 text-white shadow-lg shadow-violet-600/20 transition-all hover:scale-105 active:scale-95"
+                                    className="p-2.5 rounded-xl bg-gradient-to-r from-violet-600 to-fuchsia-600 text-white shadow-lg shadow-violet-600/20 transition-all hover:scale-105 active:scale-95 min-w-[44px] min-h-[44px] flex items-center justify-center"
                                 >
                                     <Send className="h-4 w-4" />
                                 </button>
                             ) : (
-                                <div className="p-2 text-zinc-700">
+                                <div className="p-2.5 text-zinc-700 min-w-[44px] min-h-[44px] flex items-center justify-center">
                                     <Link className="h-4 w-4" />
                                 </div>
                             )}
                         </div>
                     </div>
                 </div>
-                <p className="text-center text-[10px] text-zinc-700 mt-2 font-medium">
+                <p className="text-center text-[10px] text-zinc-700 mt-1.5 font-medium">
                     AI can make mistakes. Check generated code.
                 </p>
             </div>

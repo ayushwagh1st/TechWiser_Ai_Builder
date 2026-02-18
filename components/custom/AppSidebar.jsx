@@ -16,17 +16,17 @@ export function AppSidebar() {
     });
 
     return (
-        <div className="flex flex-col h-full w-full lg:w-[260px] flex-shrink-0 border-r border-white/[0.08] bg-[#0a0a0a]">
+        <div className="flex flex-col h-full w-full lg:w-[260px] flex-shrink-0 border-r-0 lg:border-r border-white/[0.08] bg-[#0a0a0a]">
             {/* Header */}
             <div className="p-4">
-                <Link href="/" className="flex items-center gap-2.5 mb-6 group">
+                <Link href="/" className="flex items-center gap-2.5 mb-5 lg:mb-6 group">
                     <div className="bg-gradient-to-br from-violet-600 to-fuchsia-600 p-1.5 rounded-lg shadow-lg shadow-violet-500/20 group-hover:shadow-violet-500/40 transition-all duration-300 group-hover:scale-105">
                         <LayoutGrid className="h-4 w-4 text-white" />
                     </div>
                     <span className="font-semibold text-lg text-white tracking-tight group-hover:text-zinc-100 transition-colors">TechWiser</span>
                 </Link>
                 <Link href="/">
-                    <Button className="w-full bg-white/[0.05] hover:bg-white/[0.08] text-zinc-300 hover:text-white border border-white/[0.05] hover:border-white/[0.1] justify-start gap-2.5 h-10 text-[13px] font-medium transition-all shadow-sm hover:shadow-md">
+                    <Button className="w-full bg-white/[0.05] hover:bg-white/[0.08] text-zinc-300 hover:text-white border border-white/[0.05] hover:border-white/[0.1] justify-start gap-2.5 h-12 lg:h-10 text-[13px] font-medium transition-all shadow-sm hover:shadow-md rounded-xl active:scale-[0.98]">
                         <Plus className="h-4 w-4 text-violet-400" />
                         Start New Chat
                     </Button>
@@ -34,7 +34,7 @@ export function AppSidebar() {
             </div>
 
             {/* Content */}
-            <div className="flex-1 overflow-y-auto px-2 py-2 mb-2 custom-scrollbar">
+            <div className="flex-1 overflow-y-auto px-2 py-2 mb-2 hide-scrollbar">
                 <div className="px-3 py-2 text-[11px] font-semibold text-zinc-500 uppercase tracking-wider mb-1">
                     Recent Chats
                 </div>
@@ -43,7 +43,7 @@ export function AppSidebar() {
                     // Loading state
                     <div className="space-y-1.5 px-2 mt-1">
                         {[1, 2, 3].map(i => (
-                            <div key={i} className="h-9 rounded-lg bg-white/[0.03] animate-pulse" />
+                            <div key={i} className="h-11 lg:h-9 rounded-lg bg-white/[0.03] animate-pulse" />
                         ))}
                     </div>
                 ) : workspaceList.length === 0 ? (
@@ -57,7 +57,6 @@ export function AppSidebar() {
                     <div className="space-y-0.5">
                         {workspaceList.slice().reverse().map((workspace) => {
                             const isActive = workspace._id === id;
-                            // Extract first user message for title, or fallback
                             const firstUserMsg = workspace.messages?.find(m => m.role === 'user')?.content;
                             const title = firstUserMsg ? (firstUserMsg.length > 28 ? firstUserMsg.substring(0, 28) + '...' : firstUserMsg) : 'Untitled Workspace';
 
@@ -65,7 +64,7 @@ export function AppSidebar() {
                                 <Link
                                     key={workspace._id}
                                     href={`/workspace/${workspace._id}`}
-                                    className={`group relative flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-[13px] transition-all duration-200 ${isActive
+                                    className={`group relative flex items-center gap-2.5 px-3 py-3 lg:py-2.5 rounded-xl lg:rounded-lg text-[13px] transition-all duration-200 min-h-[44px] ${isActive
                                         ? 'bg-white/[0.08] text-white font-medium'
                                         : 'text-zinc-500 hover:text-zinc-200 hover:bg-white/[0.04]'
                                         }`}
@@ -84,9 +83,9 @@ export function AppSidebar() {
 
             {/* Footer */}
             <div className="p-3 border-t border-white/[0.06] bg-[#0a0a0a]">
-                <div className="group flex items-center gap-3 px-2.5 py-2.5 rounded-xl hover:bg-white/[0.04] transition-colors cursor-pointer border border-transparent hover:border-white/[0.04]">
+                <div className="group flex items-center gap-3 px-2.5 py-3 lg:py-2.5 rounded-xl hover:bg-white/[0.04] transition-colors cursor-pointer border border-transparent hover:border-white/[0.04] min-h-[48px]">
                     <div className="relative">
-                        <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-violet-600 to-fuchsia-600 flex items-center justify-center text-xs font-bold text-white shadow-inner">
+                        <div className="w-9 h-9 lg:w-8 lg:h-8 rounded-full bg-gradient-to-tr from-violet-600 to-fuchsia-600 flex items-center justify-center text-xs font-bold text-white shadow-inner">
                             {user?.name?.charAt(0) || 'U'}
                         </div>
                         <div className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-emerald-500 border-2 border-[#0a0a0a] rounded-full" />

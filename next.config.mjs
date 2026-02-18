@@ -1,9 +1,7 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  compiler: {
-    removeConsole: process.env.NODE_ENV === "production",
-  },
+  // NOTE: removeConsole was removed — logs are needed for debugging on Netlify/Vercel
   experimental: {
     optimizePackageImports: [
       "@codesandbox/sandpack-react",

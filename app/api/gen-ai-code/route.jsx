@@ -1,8 +1,10 @@
 import { openRouterCodeStream } from "@/configs/AiModel";
 
+// Vercel: allow up to 5 minutes for code generation
+export const maxDuration = 300;
+
 /**
- * Sanitize error messages so no internal details leak to the user.
- * Strips provider names, API key references, HTTP codes, raw metadata, URLs, etc.
+ * Sanitize error messages — never leak internal details to users.
  */
 function sanitizeError(rawMsg) {
   if (!rawMsg || typeof rawMsg !== 'string') return 'Something went wrong. Please try again.';
@@ -14,28 +16,25 @@ function sanitizeError(rawMsg) {
   if (lower.includes('credit') || lower.includes('insufficient') || lower.includes('billing')) {
     return 'Our AI servers are temporarily unavailable. Please try again shortly.';
   }
-  if (lower.includes('timeout') || lower.includes('timed out') || lower.includes('deadline')) {
-    return 'The request took too long. Please try again with a simpler prompt.';
+  if (lower.includes('timeout') || lower.includes('timed out') || lower.includes('deadline') || lower.includes('abort')) {
+    return 'The request took too long. Retrying with a different AI model...';
   }
   if (lower.includes('network') || lower.includes('econnrefused') || lower.includes('fetch failed')) {
     return 'Network error — please check your connection and try again.';
   }
   if (lower.includes('json') || lower.includes('parse')) {
-    return 'The AI response was malformed. Please try again.';
+    return 'The AI response was malformed. Retrying...';
   }
-  // Generic fallback — never pass raw error through
+  if (lower.includes('no openrouter') || lower.includes('api key')) {
+    return 'AI service is not configured. Please contact the administrator.';
+  }
   return 'Something went wrong. Please try again.';
 }
 
 /**
  * Fix bad escape sequences that AI models produce inside JSON strings.
- * AI models often output literal backslash + char combos (like \' or \a)
- * that are not valid JSON escape sequences.
- * Valid JSON escapes: \" \\ \/ \b \f \n \r \t \uXXXX
  */
 function fixBadEscapes(text) {
-  // Fix invalid escape sequences inside JSON string values.
-  // Walk through the text character by character to only fix escapes inside strings.
   let result = '';
   let inString = false;
   let i = 0;
@@ -44,50 +43,30 @@ function fixBadEscapes(text) {
     const ch = text[i];
 
     if (!inString) {
-      if (ch === '"') {
-        inString = true;
-      }
+      if (ch === '"') inString = true;
       result += ch;
       i++;
     } else {
-      // Inside a JSON string
       if (ch === '\\') {
         const next = text[i + 1];
-        if (next === undefined) {
-          // Trailing backslash at end—remove it
-          i++;
-          continue;
-        }
-        // Valid JSON escapes
-        if ('"\\\/bfnrt'.includes(next)) {
-          result += ch + next;
-          i += 2;
+        if (next === undefined) { i++; continue; }
+        if ('"\\/bfnrt'.includes(next)) {
+          result += ch + next; i += 2;
         } else if (next === 'u') {
-          // Unicode escape: must be \uXXXX
-          result += text.slice(i, i + 6);
-          i += 6;
+          result += text.slice(i, i + 6); i += 6;
         } else {
-          // Invalid escape — double the backslash so it becomes literal
-          result += '\\\\' + next;
-          i += 2;
+          result += '\\\\' + next; i += 2;
         }
       } else if (ch === '"') {
-        inString = false;
-        result += ch;
-        i++;
+        inString = false; result += ch; i++;
       } else if (ch === '\n') {
-        // Literal newlines inside JSON strings are invalid — escape them
-        result += '\\n';
-        i++;
+        result += '\\n'; i++;
       } else if (ch === '\r') {
-        result += '\\r';
-        i++;
+        result += '\\r'; i++;
       } else if (ch === '\t') {
-        result += '\\t';
-        i++;
+        result += '\\t'; i++;
       } else {
-        result += ch;
-        i++;
+        result += ch; i++;
       }
     }
   }
@@ -97,45 +76,41 @@ function fixBadEscapes(text) {
 function extractJson(text) {
   if (!text) return null;
 
-  // 1. Remove <think>...</think> blocks common in reasoning models (DeepSeek R1)
+  // Remove <think>...</think> blocks (DeepSeek R1)
   let cleaned = text.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
 
-  // 2. Try raw parse first — if the model gave perfect JSON, use it
-  try { return JSON.parse(cleaned); } catch (_) { /* continue */ }
+  try { return JSON.parse(cleaned); } catch (_) { }
 
-  // 3. Try to find markdown json/jsonc block
+  // Try markdown json block
   const jsonMatch = cleaned.match(/```(?:json|jsonc)?\s*([\s\S]*?)\s*```/);
-  if (jsonMatch && jsonMatch[1]) {
+  if (jsonMatch?.[1]) {
     cleaned = jsonMatch[1].trim();
-    try { return JSON.parse(cleaned); } catch (_) { /* continue */ }
+    try { return JSON.parse(cleaned); } catch (_) { }
   }
 
-  // 4. Extract from first '{' to last '}'
+  // Extract from first '{' to last '}'
   const firstBrace = cleaned.indexOf('{');
   const lastBrace = cleaned.lastIndexOf('}');
-  if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+  if (firstBrace !== -1 && lastBrace > firstBrace) {
     cleaned = cleaned.slice(firstBrace, lastBrace + 1);
-    try { return JSON.parse(cleaned); } catch (_) { /* continue */ }
+    try { return JSON.parse(cleaned); } catch (_) { }
   }
 
-  // 5. Fix bad escape sequences (most common AI failure mode)
-  try {
-    const escaped = fixBadEscapes(cleaned);
-    return JSON.parse(escaped);
-  } catch (_) { /* continue */ }
+  // Fix bad escapes
+  try { return JSON.parse(fixBadEscapes(cleaned)); } catch (_) { }
 
-  // 6. Progressive cleanup attempts
+  // Progressive cleanup
   try {
     let fixed = cleaned.replace(/,\s*}/g, '}').replace(/,\s*]/g, ']');
-    fixed = fixed.replace(/\/\/[^\n]*/g, ''); // Remove single-line comments
+    fixed = fixed.replace(/\/\/[^\n]*/g, '');
     fixed = fixBadEscapes(fixed);
     return JSON.parse(fixed);
-  } catch (_) { /* continue */ }
+  } catch (_) { }
 
-  // 7. Truncated-JSON recovery — try closing unclosed braces/brackets
+  // Truncated-JSON recovery
   try {
     let attempt = fixBadEscapes(cleaned);
-    attempt = attempt.replace(/,\s*$/g, ''); // remove trailing comma
+    attempt = attempt.replace(/,\s*$/g, '');
     let opens = 0, openBrackets = 0;
     for (const ch of attempt) {
       if (ch === '{') opens++;
@@ -143,26 +118,17 @@ function extractJson(text) {
       else if (ch === '[') openBrackets++;
       else if (ch === ']') openBrackets--;
     }
-    if (attempt.match(/:\s*"[^"]*$/)) {
-      attempt += '"';
-    }
+    if (attempt.match(/:\s*"[^"]*$/)) attempt += '"';
     while (openBrackets > 0) { attempt += ']'; openBrackets--; }
     while (opens > 0) { attempt += '}'; opens--; }
     return JSON.parse(attempt);
   } catch (e) {
-    console.warn(`extractJson: all recovery attempts failed (length=${cleaned.length}):`, e.message);
+    console.warn(`extractJson: all attempts failed (${cleaned.length} chars):`, e.message);
   }
 
-  // 8. Last resort — return the cleaned string and let caller handle parse error
   return cleaned;
 }
 
-
-
-/**
- * Try to parse fullText into a valid code-gen result. Returns parsed object or null.
- * Now includes a fallback that extracts just the "files" subtree if the outer JSON is broken.
- */
 function tryParseCodeResult(fullText) {
   try {
     const codeResult = extractJson(fullText);
@@ -174,13 +140,12 @@ function tryParseCodeResult(fullText) {
     } else {
       return null;
     }
-    // Validate that it has the expected shape (must have "files" key)
-    if (parsedData && parsedData.files && typeof parsedData.files === "object") {
+
+    if (parsedData?.files && typeof parsedData.files === "object") {
       return parsedData;
     }
 
-    // Fallback: maybe the AI returned files at the top level without wrapper
-    // Check if parsedData looks like a files map (keys start with "/" and values have "code")
+    // Fallback: files at top level
     const keys = Object.keys(parsedData || {});
     if (keys.length > 0 && keys.some(k => k.startsWith('/')) && keys.some(k => parsedData[k]?.code)) {
       return { files: parsedData, projectTitle: "Generated Project", explanation: "" };
@@ -193,37 +158,26 @@ function tryParseCodeResult(fullText) {
   }
 }
 
-/**
- * Last-resort extraction: find "files" key in raw text and try to parse just that subtree.
- */
 function extractFilesFromRawText(fullText) {
   try {
-    // Find "files" : { and extract from there
     const filesIdx = fullText.indexOf('"files"');
     if (filesIdx === -1) return null;
 
-    // Find the opening brace after "files" :
     const colonIdx = fullText.indexOf(':', filesIdx + 7);
     if (colonIdx === -1) return null;
 
     const braceIdx = fullText.indexOf('{', colonIdx);
     if (braceIdx === -1) return null;
 
-    // Find matching closing brace
-    let depth = 0;
-    let end = -1;
+    let depth = 0, end = -1;
     for (let i = braceIdx; i < fullText.length; i++) {
       if (fullText[i] === '{') depth++;
-      else if (fullText[i] === '}') {
-        depth--;
-        if (depth === 0) { end = i; break; }
-      }
+      else if (fullText[i] === '}') { depth--; if (depth === 0) { end = i; break; } }
     }
     if (end === -1) return null;
 
     const filesStr = fullText.slice(braceIdx, end + 1);
-    const fixed = fixBadEscapes(filesStr);
-    const files = JSON.parse(fixed);
+    const files = JSON.parse(fixBadEscapes(filesStr));
 
     if (typeof files === 'object' && Object.keys(files).length > 0) {
       return { files, projectTitle: "Generated Project", explanation: "" };
@@ -234,10 +188,8 @@ function extractFilesFromRawText(fullText) {
   return null;
 }
 
-export const maxDuration = 300; // Allow up to 5 minutes for generation
-
 export async function POST(req) {
-  const MAX_CODE_RETRIES = 3;
+  const MAX_CODE_RETRIES = 4; // Increased from 3
 
   try {
     const { messages, currentFilePaths, includeSupabase, deployToVercel } = await req.json();
@@ -259,10 +211,12 @@ export async function POST(req) {
           closed = true;
         };
 
+        // Keepalive: send a ping every 15s to prevent Vercel/proxy from killing idle connection
+        const keepalive = setInterval(() => {
+          safeSend({ ping: true, timestamp: Date.now() });
+        }, 15_000);
+
         try {
-          // Code generation with retry on parse failure
-          // IMPORTANT: Only stream chunks on first attempt.
-          // On retries, collect silently to avoid sending duplicate/mixed text to client.
           let parsedData = null;
           let lastError = null;
 
@@ -270,10 +224,15 @@ export async function POST(req) {
             const isFirstAttempt = attempt === 0;
 
             if (!isFirstAttempt) {
-              // Wait 3s before retry to let rate limits cool down
-              await new Promise(resolve => setTimeout(resolve, 3000));
-              console.log(`[Retry] Code generation attempt ${attempt + 1}/${MAX_CODE_RETRIES}`);
-              safeSend({ chunk: "\n\n⏳ Retrying code generation...\n" });
+              // Progressive backoff: 3s, 5s, 8s
+              const delay = [3000, 5000, 8000][attempt - 1] || 5000;
+              await new Promise(resolve => setTimeout(resolve, delay));
+              console.log(`[CodeGen] Retry ${attempt + 1}/${MAX_CODE_RETRIES} (waited ${delay}ms)`);
+              safeSend({
+                chunk: `\n\n⏳ Attempt ${attempt + 1}/${MAX_CODE_RETRIES} — trying a different AI model...\n`,
+                retry: attempt + 1,
+                maxRetries: MAX_CODE_RETRIES,
+              });
             }
 
             try {
@@ -282,42 +241,48 @@ export async function POST(req) {
                 deployToVercel: !!deployToVercel,
               });
 
-              // Collect the stream
               let fullText = "";
+              let chunkCount = 0;
               for await (const delta of textStream) {
                 if (!delta) continue;
                 fullText += delta;
-                // Only stream raw chunks to client on first attempt
+                chunkCount++;
+                // Only stream to client on first attempt
                 if (isFirstAttempt) {
                   safeSend({ chunk: delta });
                 }
+                // On retries, send periodic progress so client knows we're alive
+                if (!isFirstAttempt && chunkCount % 50 === 0) {
+                  safeSend({ progress: fullText.length, retry: attempt + 1 });
+                }
               }
+
+              console.log(`[CodeGen] Attempt ${attempt + 1}: received ${fullText.length} chars, ${chunkCount} chunks`);
 
               // Try to parse
               parsedData = tryParseCodeResult(fullText);
-
-              // Last-resort: extract just the files subtree
               if (!parsedData) {
                 parsedData = extractFilesFromRawText(fullText);
               }
 
               if (parsedData) {
+                const fileCount = Object.keys(parsedData.files || {}).length;
+                console.log(`[CodeGen] ✓ Success on attempt ${attempt + 1}: ${fileCount} files`);
                 safeSend({ final: parsedData, done: true, result: fullText });
                 break;
               } else {
                 lastError = "Failed to parse AI response as valid code JSON";
-                console.warn(`[Retry] Attempt ${attempt + 1} failed: could not parse JSON from ${fullText.length} chars`);
-                // Log first 500 chars for debugging
-                console.warn(`[Retry] Response preview: ${fullText.slice(0, 500)}`);
+                console.warn(`[CodeGen] Attempt ${attempt + 1}: parse failed from ${fullText.length} chars`);
+                console.warn(`[CodeGen] Preview: ${fullText.slice(0, 500)}`);
               }
             } catch (e) {
               lastError = e.message || "Code generation failed";
-              console.warn(`[Retry] Attempt ${attempt + 1} stream error:`, lastError);
+              console.warn(`[CodeGen] Attempt ${attempt + 1} error: ${lastError.slice(0, 200)}`);
             }
           }
 
           if (!parsedData) {
-            console.error("All code generation attempts failed:", lastError);
+            console.error("[CodeGen] All attempts failed:", lastError);
             safeSend({
               error: sanitizeError(lastError),
               rawError: lastError,
@@ -325,12 +290,15 @@ export async function POST(req) {
             });
           }
 
+          clearInterval(keepalive);
           safeClose();
         } catch (e) {
-          console.error("Stream Error:", e);
+          clearInterval(keepalive);
+          console.error("[CodeGen] Fatal stream error:", e);
           safeSend({
             error: sanitizeError(e.message),
-            rawError: e.message
+            rawError: e.message,
+            done: true,
           });
           safeClose();
         }
@@ -348,7 +316,7 @@ export async function POST(req) {
     return new Response(
       JSON.stringify({
         error: e.message || "Code generation failed",
-        rawError: e.message
+        rawError: e.message,
       }),
       {
         status: 500,
