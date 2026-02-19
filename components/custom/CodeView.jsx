@@ -178,7 +178,8 @@ function CodeView() {
 
                     if (result.success) {
                         const processedAiFiles = preprocessFiles(result.data.files || {});
-                        setFilesData(processedAiFiles);
+                        // MERGE new files with existing files
+                        setFilesData(prev => ({ ...prev, ...processedAiFiles }));
                         await UpdateFiles({ workspaceId: id, files: result.data.files });
                         setActiveTab('preview');
                         setGenPhase('done');
@@ -284,18 +285,28 @@ function CodeView() {
     const SandpackErrorListener = () => {
         const { sandpack } = useSandpack();
         const [errorMsg, setErrorMsg] = useState(null);
+
+        // Sticky error state
         useEffect(() => {
             if (sandpack?.error) {
                 const err = sandpack.error;
                 const message = typeof err === "string" ? err : (err?.message || err?.title || JSON.stringify(err));
                 setErrorMsg(message);
                 setPreviewError(message);
-            } else { setErrorMsg(null); setPreviewError(null); }
+            }
+            // Intentionally do NOT clear errorMsg when sandpack.error clears
         }, [sandpack?.error, setPreviewError]);
+
         if (!errorMsg) return null;
         return (
             <div className="absolute inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md">
-                <div className="glass-premium rounded-2xl p-5 lg:p-6 shadow-2xl max-w-md w-full scale-in-animation border-red-500/20">
+                <div className="glass-premium rounded-2xl p-5 lg:p-6 shadow-2xl max-w-md w-full scale-in-animation border-red-500/20 relative">
+                    <button
+                        onClick={() => { setErrorMsg(null); setPreviewError(null); }}
+                        className="absolute top-3 right-3 text-zinc-500 hover:text-white transition-colors"
+                    >
+                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>
+                    </button>
                     <div className="flex flex-col items-center text-center gap-4">
                         <div className="h-12 w-12 rounded-full bg-red-500/10 flex items-center justify-center border border-red-500/20">
                             <Rocket className="h-6 w-6 text-red-500 rotate-180" />
@@ -308,7 +319,11 @@ function CodeView() {
                             <code className="text-xs font-mono text-red-200 block max-h-32 overflow-y-auto">{errorMsg}</code>
                         </div>
                         <button
-                            onClick={() => setMessages(prev => [...prev, { role: 'user', content: `Fix this runtime error:\n\n${errorMsg}\n\nPlease fix the code.` }])}
+                            onClick={() => {
+                                setMessages(prev => [...prev, { role: 'user', content: `Fix this runtime error:\n\n${errorMsg}\n\nPlease fix the code.` }]);
+                                setErrorMsg(null);
+                                setPreviewError(null);
+                            }}
                             className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-500 hover:to-rose-500 text-white px-4 py-3 rounded-xl transition-all font-medium shadow-lg min-h-[48px] btn-press"
                         >
                             <Sparkles className="h-4 w-4" />Fix with AI
@@ -318,8 +333,6 @@ function CodeView() {
             </div>
         );
     };
-
-    // ─── Phase-aware Loading Overlay ─────────────────────────────────
 
     const PhaseLoadingOverlay = () => {
         const phaseLabels = {
@@ -333,13 +346,11 @@ function CodeView() {
         return (
             <div className='absolute inset-0 backdrop-blur-md flex flex-col items-center justify-center z-50' style={{ background: 'rgba(6,6,8,0.92)' }}>
                 <div className="glass-premium p-6 lg:p-8 rounded-2xl flex flex-col items-center gap-4 lg:gap-5 text-center max-w-sm mx-4 w-full max-w-[340px] scale-in-animation">
-                    {/* Spinner */}
                     <div className="relative">
                         <div className="absolute inset-0 bg-violet-500 blur-2xl opacity-20 rounded-full" />
                         <Loader2Icon className='relative animate-spin h-8 lg:h-10 w-8 lg:w-10 text-violet-400' />
                     </div>
 
-                    {/* Main status */}
                     <div>
                         <h2 className='text-base font-semibold text-white mb-1'>Building your app</h2>
                         <p className="text-sm text-zinc-500">{phaseLabels[genPhase] || genStatus || 'Working...'}</p>
@@ -348,7 +359,6 @@ function CodeView() {
                         </p>
                     </div>
 
-                    {/* File progress bar */}
                     {(genPhase === 'generating' || genPhase === 'planned') && genTotal > 0 && (
                         <div className="w-full space-y-2">
                             <div className="flex justify-between text-xs text-zinc-600">
@@ -364,7 +374,6 @@ function CodeView() {
                         </div>
                     )}
 
-                    {/* File list */}
                     {genPlan.length > 0 && (
                         <div className="w-full text-left space-y-1 max-h-32 overflow-y-auto hide-scrollbar">
                             {genPlan.map((filePath, i) => (
@@ -386,7 +395,6 @@ function CodeView() {
                         </div>
                     )}
 
-                    {/* Retry indicator */}
                     {clientRetry > 0 && (
                         <p className="text-xs text-amber-500/80 flex items-center gap-1.5">
                             <RefreshCw className="h-3 w-3" />
@@ -394,7 +402,6 @@ function CodeView() {
                         </p>
                     )}
 
-                    {/* Dots */}
                     <div className="flex gap-1.5">
                         <div className="w-1.5 h-1.5 rounded-full bg-violet-400 typing-dot" />
                         <div className="w-1.5 h-1.5 rounded-full bg-violet-400 typing-dot" />
@@ -407,9 +414,7 @@ function CodeView() {
 
     return (
         <div className='relative h-full border-0 lg:border border-white/[0.06] rounded-none lg:rounded-2xl overflow-hidden flex flex-col' style={{ background: 'var(--bg-primary, #060608)' }}>
-            {/* Header */}
             <div className='flex items-center justify-between px-2 lg:px-4 py-2 lg:py-2.5 border-b border-white/[0.06]'>
-                {/* Tab switcher */}
                 <div className='flex items-center gap-0.5 p-1 rounded-xl glass'>
                     {[
                         { id: 'code', icon: Code, label: 'Code' },
@@ -419,8 +424,8 @@ function CodeView() {
                             key={tab.id}
                             onClick={() => setActiveTab(tab.id)}
                             className={`relative flex items-center gap-1.5 px-3 lg:px-3.5 py-2 rounded-lg text-[13px] font-medium transition-all duration-200 min-h-[40px] btn-press ${activeTab === tab.id
-                                    ? 'text-white'
-                                    : 'text-zinc-500 hover:text-zinc-300'
+                                ? 'text-white'
+                                : 'text-zinc-500 hover:text-zinc-300'
                                 }`}
                         >
                             {activeTab === tab.id && (
@@ -432,7 +437,6 @@ function CodeView() {
                     ))}
                 </div>
 
-                {/* Actions */}
                 <div className="flex items-center gap-1.5 lg:gap-2">
                     <button
                         onClick={downloadFiles}
@@ -446,8 +450,8 @@ function CodeView() {
                         onClick={deployToVercel}
                         disabled={deploying}
                         className={`flex items-center gap-1.5 text-white px-3 lg:px-3.5 py-2 rounded-xl transition-all text-[13px] font-medium disabled:opacity-50 min-h-[40px] btn-press ${deploySuccess
-                                ? 'bg-gradient-to-r from-emerald-600 to-green-600 shadow-lg shadow-emerald-600/20'
-                                : 'bg-gradient-to-r from-violet-600 to-fuchsia-600 hover:from-violet-500 hover:to-fuchsia-500 shadow-lg shadow-violet-600/20'
+                            ? 'bg-gradient-to-r from-emerald-600 to-green-600 shadow-lg shadow-emerald-600/20'
+                            : 'bg-gradient-to-r from-violet-600 to-fuchsia-600 hover:from-violet-500 hover:to-fuchsia-500 shadow-lg shadow-violet-600/20'
                             }`}
                     >
                         {deploying ? (
@@ -462,7 +466,6 @@ function CodeView() {
                 </div>
             </div>
 
-            {/* Content */}
             <div className="flex-1 overflow-hidden relative">
                 <SandpackProvider
                     key={sandpackKey}

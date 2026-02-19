@@ -379,3 +379,46 @@ export async function openRouterPlanStream(messages) {
   ];
   return callStreaming(formatted, FAST_MODELS);
 }
+
+// ─── Partial Regen / Fix Plan ────────────────────────────────────────
+
+export async function openRouterFixPlan(messages, currentFilePaths) {
+  const lastMsg = messages[messages.length - 1].content;
+  const prompt = `${Prompt.FIX_PLAN_PROMPT}\n\nExisting Files: ${JSON.stringify(currentFilePaths)}\n\nUser Request/Error: ${lastMsg}`;
+
+  // Use fast models for planning
+  for (let i = 0; i < FAST_MODELS.length; i++) {
+    const model = FAST_MODELS[i];
+    try {
+      const apiKey = getNextKey();
+      const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": "https://techwiser.ai",
+          "X-Title": "TechWiser AI Builder",
+        },
+        body: JSON.stringify({
+          model,
+          messages: [{ role: "system", content: prompt }],
+          temperature: 0.2, // Low temp for precise planning
+          max_tokens: 500,  // Small output
+          stream: false,
+        }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        const content = data.choices[0]?.message?.content || "";
+        // Clean markdown fences if present
+        const cleaned = content.replace(/```json/g, '').replace(/```/g, '').trim();
+        if (cleaned.startsWith('{')) return cleaned;
+      }
+      markKeyFailure(getUuidFromKey(apiKey));
+    } catch (e) {
+      console.warn(`[FixPlan] Model ${model} failed: ${e.message}`);
+    }
+  }
+  throw new Error("Failed to generate fix plan");
+}

@@ -1,6 +1,6 @@
 "use client"
 import { MessagesContext } from '@/context/MessagesContext';
-import { Loader2Icon, Send, AlertCircle, X, Database, Rocket, Link, Wand2, Sparkles } from 'lucide-react';
+import { Loader2Icon, Send, AlertCircle, X, Square, Link, Wand2, Sparkles } from 'lucide-react';
 import { api } from '@/convex/_generated/api';
 import { useConvex } from 'convex/react';
 import { useParams } from 'next/navigation';
@@ -44,7 +44,7 @@ MessageItem.displayName = 'MessageItem';
 function ChatView() {
     const { id } = useParams();
     const convex = useConvex();
-    const { messages, setMessages, previewError, buildOptions, setBuildOptions } = useContext(MessagesContext);
+    const { messages, setMessages, previewError } = useContext(MessagesContext);
     const [userInput, setUserInput] = useState('');
     const [showErrorPopup, setShowErrorPopup] = useState(true);
     const [loading, setLoading] = useState(false);
@@ -149,16 +149,17 @@ function ChatView() {
     }, [messages, GetAiResponse]);
 
     const onGenerate = useCallback((input) => {
+        if (loading) return; // Prevent double submission
         setMessages(prev => [...prev, { role: 'user', content: input }]);
         setUserInput('');
-    }, [setMessages]);
+    }, [loading, setMessages]);
 
     const onFixPreviewError = useCallback(() => {
-        if (!previewError) return;
+        if (!previewError || loading) return;
         const fixPrompt = `The live preview of the generated project is failing with the following runtime or build error:\n\n${previewError}\n\nPlease update the generated React + Vite code to fix this error and keep the project production-ready. Only change what is necessary to resolve the issue.`;
         setMessages(prev => [...prev, { role: 'user', content: fixPrompt }]);
         setShowErrorPopup(false);
-    }, [previewError, setMessages]);
+    }, [previewError, loading, setMessages]);
 
     const dismissErrorPopup = useCallback(() => setShowErrorPopup(false), []);
 
@@ -205,7 +206,8 @@ function ChatView() {
                                 </button>
                                 <button
                                     onClick={onFixPreviewError}
-                                    className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-red-500 to-rose-500 hover:from-red-400 hover:to-rose-400 text-white text-sm font-medium transition-all shadow-lg shadow-red-500/20 min-h-[44px] btn-press"
+                                    disabled={loading}
+                                    className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-red-500 to-rose-500 hover:from-red-400 hover:to-rose-400 text-white text-sm font-medium transition-all shadow-lg shadow-red-500/20 min-h-[44px] btn-press disabled:opacity-50"
                                 >
                                     <Wand2 className="h-4 w-4" />
                                     Fix it for me
@@ -248,7 +250,8 @@ function ChatView() {
                         <div className="flex justify-center animate-in fade-in slide-in-from-top-2">
                             <button
                                 onClick={onFixPreviewError}
-                                className="inline-flex items-center gap-2 px-3.5 py-2 rounded-full bg-red-500/10 border border-red-500/20 text-red-400 text-xs font-medium hover:bg-red-500/20 transition-all min-h-[44px] btn-press"
+                                disabled={loading}
+                                className="inline-flex items-center gap-2 px-3.5 py-2 rounded-full bg-red-500/10 border border-red-500/20 text-red-400 text-xs font-medium hover:bg-red-500/20 transition-all min-h-[44px] btn-press disabled:opacity-50"
                             >
                                 <AlertCircle className="h-3.5 w-3.5" />
                                 Fix preview error
@@ -287,62 +290,37 @@ function ChatView() {
 
             {/* Input Area */}
             <div className="p-2 lg:p-3 border-t border-white/[0.06] pb-safe">
-                {/* Build Options */}
-                <div className="flex flex-wrap gap-1.5 mb-2 px-1">
-                    <label className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium cursor-pointer transition-all border min-h-[36px] btn-press ${buildOptions?.includeSupabase
-                        ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
-                        : 'bg-transparent border-white/[0.05] text-zinc-700 hover:text-zinc-400 hover:bg-white/[0.03]'
-                        }`}>
-                        <input
-                            type="checkbox"
-                            className="hidden"
-                            checked={buildOptions?.includeSupabase ?? false}
-                            onChange={(e) => setBuildOptions?.((prev) => ({ ...(prev || {}), includeSupabase: e.target.checked }))}
-                        />
-                        <Database className="h-3.5 w-3.5" />
-                        Supabase
-                    </label>
-                    <label className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium cursor-pointer transition-all border min-h-[36px] btn-press ${buildOptions?.deployToVercel
-                        ? 'bg-sky-500/10 border-sky-500/20 text-sky-400'
-                        : 'bg-transparent border-white/[0.05] text-zinc-700 hover:text-zinc-400 hover:bg-white/[0.03]'
-                        }`}>
-                        <input
-                            type="checkbox"
-                            className="hidden"
-                            checked={buildOptions?.deployToVercel ?? false}
-                            onChange={(e) => setBuildOptions?.((prev) => ({ ...(prev || {}), deployToVercel: e.target.checked }))}
-                        />
-                        <Rocket className="h-3.5 w-3.5" />
-                        Vercel
-                    </label>
-                </div>
-
                 {/* Input Field */}
                 <div className={`relative rounded-xl transition-all duration-300 ${isFocused ? 'glow-border-focus' : ''}`}>
                     <div className="glass rounded-xl overflow-hidden">
                         <textarea
                             ref={textareaRef}
-                            placeholder="Ask anything..."
+                            placeholder={loading ? "Generating code..." : "Ask anything..."}
                             value={userInput}
                             onChange={(event) => setUserInput(event.target.value)}
                             onFocus={() => setIsFocused(true)}
                             onBlur={() => setIsFocused(false)}
+                            disabled={loading}
                             onKeyDown={(e) => {
                                 if (e.key === 'Enter' && !e.shiftKey) {
                                     e.preventDefault();
-                                    if (userInput.trim()) onGenerate(userInput);
+                                    if (userInput.trim() && !loading) onGenerate(userInput);
                                 }
                             }}
-                            className="w-full bg-transparent text-[14px] text-zinc-100 pl-4 pr-14 py-3 focus:ring-0 outline-none resize-none min-h-[48px] max-h-[120px] placeholder-zinc-700"
+                            className="w-full bg-transparent text-[14px] text-zinc-100 pl-4 pr-14 py-3 focus:ring-0 outline-none resize-none min-h-[48px] max-h-[120px] placeholder-zinc-700 disabled:opacity-50 disabled:cursor-not-allowed"
                             rows={1}
                         />
                         <div className="absolute right-2 bottom-2">
-                            {userInput.trim() ? (
+                            {userInput.trim() || loading ? (
                                 <button
-                                    onClick={() => onGenerate(userInput)}
-                                    className="p-2.5 rounded-xl bg-gradient-to-r from-violet-600 to-fuchsia-600 text-white shadow-lg shadow-violet-600/20 transition-all hover:shadow-violet-600/40 min-w-[44px] min-h-[44px] flex items-center justify-center btn-press pulse-glow"
+                                    onClick={() => !loading && onGenerate(userInput)}
+                                    disabled={loading}
+                                    className={`p-2.5 rounded-xl text-white shadow-lg transition-all min-w-[44px] min-h-[44px] flex items-center justify-center btn-press ${loading
+                                            ? 'bg-red-500/80 cursor-wait shadow-red-500/20'
+                                            : 'bg-gradient-to-r from-violet-600 to-fuchsia-600 shadow-violet-600/20 hover:shadow-violet-600/40 pulse-glow'
+                                        }`}
                                 >
-                                    <Send className="h-4 w-4" />
+                                    {loading ? <Square className="h-4 w-4 fill-white" /> : <Send className="h-4 w-4" />}
                                 </button>
                             ) : (
                                 <div className="p-2.5 text-zinc-800 min-w-[44px] min-h-[44px] flex items-center justify-center">

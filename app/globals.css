@@ -509,14 +509,20 @@ body {
   }
 }
 
-/* ── Sandpack editor smoothing (fix blinking) ── */
+/* ── Sandpack editor smoothing & height fix ── */
 .sp-wrapper,
 .sp-layout,
-.sp-stack {
+.sp-stack,
+.sp-preview-container,
+.sp-preview-iframe {
   transition: none !important;
   will-change: auto;
+  height: 100% !important;
+  min-height: 100% !important;
+  max-height: 100% !important;
 }
 
 .sp-code-editor {
   transition: none !important;
+  height: 100% !important;
 }

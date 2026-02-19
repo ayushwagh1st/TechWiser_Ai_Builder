@@ -122,6 +122,22 @@ const Prompt = {
   4. In the product spec paragraph, use plain language—describe appearance, user experience, and main features, avoiding technical terms or implementation details.
   5.   Output a single, smooth-flowing paragraph (120-200 words) describing the product spec, without lists or questions.
   `,
+
+  FIX_PLAN_PROMPT: dedent`
+  You are an expert AI code debugger.
+  Analyze the provided Runtime Error and Project Files.
+  Identify the ONE file that causes the error.
+
+  Return a JSON object with:
+  - "fileToUpdate": The path of the file to fix (e.g., "/App.js")
+  - "instructions": Brief instructions for the fix.
+
+  Example Output:
+  {
+    "fileToUpdate": "/components/TodoList.js",
+    "instructions": "Fix undefined 'todos' variable by initializing it as an empty array."
+  }
+  `,
 };
 
 export default Prompt;

@@ -1,4 +1,4 @@
-import { openRouterFilePlan, openRouterSingleFile, openRouterCodeStream } from "@/configs/AiModel";
+import { openRouterFilePlan, openRouterSingleFile, openRouterCodeStream, openRouterFixPlan } from "@/configs/AiModel";
 
 // Vercel: allow up to 5 minutes
 export const maxDuration = 300;
@@ -240,24 +240,63 @@ export async function POST(req) {
 
           // ── PHASED GENERATION (Primary) ────────────
           try {
-            send({ phase: 'planning', status: 'Planning your project structure...' });
+            // ─── SMART FIX MODE ─────────────────────────────
+            let isFixMode = false;
+            if (userRequest.toLowerCase().startsWith('fix')) {
+              try {
+                send({ phase: 'planning', status: 'Analyzing error to find the bug...' });
 
-            // Phase 1: Plan
-            const plan = await getFilePlan(msgs, paths, send);
-            projectTitle = plan.projectTitle || 'Generated Project';
-            console.log(`[Route] Plan: ${plan.files.map(f => f.path).join(', ')}`);
+                // 1. Identify which file to fix
+                const fixPlanRaw = await openRouterFixPlan(msgs, paths);
+                const fixPlan = extractJson(fixPlanRaw);
 
-            send({
-              phase: 'planned',
-              status: `Project planned: ${plan.files.length} files`,
-              plan: plan.files.map(f => f.path),
-              total: plan.files.length,
-            });
+                if (fixPlan?.fileToUpdate) {
+                  const targetFile = fixPlan.fileToUpdate;
+                  send({ phase: 'planning', status: `Identified issue in ${targetFile}` });
+                  console.log(`[SmartFix] Targeting ${targetFile}`);
 
-            // Phase 2: Generate each file
-            files = await generateFiles(plan, userRequest, send);
+                  // 2. Regenerate ONLY that file
+                  send({ phase: 'generating', status: `Fixing ${targetFile}...`, currentFile: targetFile });
+                  isFixMode = true;
 
-            const fileCount = Object.keys(files).length;
+                  // Use specific prompt for fixing
+                  const fixPrompt = `You are fixing a bug in ${targetFile}. The error reported is: "${userRequest}".\n\nExisting code context is provided. Rewrite the entire file to fix the error. Return ONLY code.`;
+
+                  const rawCode = await openRouterSingleFile(fixPrompt, targetFile, fixPlan.instructions || "Fix the error", [{ path: targetFile, description: "File to fix" }]);
+                  const code = cleanCodeResponse(rawCode);
+
+                  if (code && code.length > 10) {
+                    files = { [targetFile]: { code } };
+                    console.log(`[SmartFix] ✓ Fixed ${targetFile}`);
+                  }
+                }
+              } catch (fixError) {
+                console.warn(`[SmartFix] Failed: ${fixError.message}`);
+                // Fall through to normal generation if fix fails
+              }
+            }
+
+            if (!files) {
+              // Normal generation flow (Plan -> Generate All)
+              send({ phase: 'planning', status: 'Planning your project structure...' });
+
+              // Phase 1: Plan
+              const plan = await getFilePlan(msgs, paths, send);
+              projectTitle = plan.projectTitle || 'Generated Project';
+              console.log(`[Route] Plan: ${plan.files.map(f => f.path).join(', ')}`);
+
+              send({
+                phase: 'planned',
+                status: `Project planned: ${plan.files.length} files`,
+                plan: plan.files.map(f => f.path),
+                total: plan.files.length,
+              });
+
+              // Phase 2: Generate each file
+              files = await generateFiles(plan, userRequest, send);
+            }
+
+            const fileCount = Object.keys(files || {}).length;
             if (fileCount > 0) {
               console.log(`[Route] ✓ Phased generation: ${fileCount} files`);
             } else {
