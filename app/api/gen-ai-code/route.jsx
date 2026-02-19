@@ -1,327 +1,317 @@
-import { openRouterCodeStream } from "@/configs/AiModel";
+import { openRouterFilePlan, openRouterSingleFile, openRouterCodeStream } from "@/configs/AiModel";
 
-// Vercel: allow up to 5 minutes for code generation
+// Vercel: allow up to 5 minutes
 export const maxDuration = 300;
 
-/**
- * Sanitize error messages — never leak internal details to users.
- */
+// ─── Utilities ───────────────────────────────────────────────────────
+
 function sanitizeError(rawMsg) {
   if (!rawMsg || typeof rawMsg !== 'string') return 'Something went wrong. Please try again.';
-  const lower = rawMsg.toLowerCase();
-
-  if (lower.includes('rate limit') || lower.includes('429') || lower.includes('quota') || lower.includes('exceeded') || lower.includes('temporarily')) {
-    return 'Our AI servers are busy right now. Please wait a moment and try again.';
-  }
-  if (lower.includes('credit') || lower.includes('insufficient') || lower.includes('billing')) {
-    return 'Our AI servers are temporarily unavailable. Please try again shortly.';
-  }
-  if (lower.includes('timeout') || lower.includes('timed out') || lower.includes('deadline') || lower.includes('abort')) {
-    return 'The request took too long. Retrying with a different AI model...';
-  }
-  if (lower.includes('network') || lower.includes('econnrefused') || lower.includes('fetch failed')) {
-    return 'Network error — please check your connection and try again.';
-  }
-  if (lower.includes('json') || lower.includes('parse')) {
-    return 'The AI response was malformed. Retrying...';
-  }
-  if (lower.includes('no openrouter') || lower.includes('api key')) {
-    return 'AI service is not configured. Please contact the administrator.';
-  }
+  const l = rawMsg.toLowerCase();
+  if (l.includes('rate limit') || l.includes('429') || l.includes('quota') || l.includes('busy')) return 'AI servers are busy. Please wait a moment and try again.';
+  if (l.includes('timeout') || l.includes('timed out') || l.includes('abort')) return 'Request took too long. Retrying...';
+  if (l.includes('network') || l.includes('fetch failed')) return 'Network error. Please check your connection.';
+  if (l.includes('api key')) return 'AI service is not configured.';
   return 'Something went wrong. Please try again.';
 }
 
-/**
- * Fix bad escape sequences that AI models produce inside JSON strings.
- */
-function fixBadEscapes(text) {
-  let result = '';
-  let inString = false;
-  let i = 0;
+function extractJson(text) {
+  if (!text) return null;
+  let cleaned = text.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+  try { return JSON.parse(cleaned); } catch (_) { }
+  const m = cleaned.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+  if (m?.[1]) { try { return JSON.parse(m[1].trim()); } catch (_) { } }
+  const f = cleaned.indexOf('{'), l = cleaned.lastIndexOf('}');
+  if (f !== -1 && l > f) { try { return JSON.parse(cleaned.slice(f, l + 1)); } catch (_) { } }
+  // Fix common JSON issues
+  try {
+    let fix = cleaned.slice(f, l + 1);
+    fix = fix.replace(/,\s*}/g, '}').replace(/,\s*]/g, ']');
+    return JSON.parse(fix);
+  } catch (_) { }
+  return null;
+}
 
+function cleanCodeResponse(text) {
+  if (!text) return '';
+  // Remove markdown fences
+  let code = text.replace(/^```(?:jsx?|javascript|typescript|tsx?|css|html)?\s*\n?/gm, '');
+  code = code.replace(/\n?```\s*$/gm, '');
+  // Remove <think> blocks
+  code = code.replace(/<think>[\s\S]*?<\/think>/g, '');
+  // Remove "Here is the code:" prefixes
+  code = code.replace(/^(?:Here(?:'s| is) (?:the|your) (?:code|file|content).*?:\s*\n)/i, '');
+  return code.trim();
+}
+
+// ─── Phase 1: Get File Plan ─────────────────────────────────────────
+
+async function getFilePlan(messages, currentFilePaths, sendUpdate) {
+  const MAX_PLAN_RETRIES = 3;
+
+  for (let attempt = 0; attempt < MAX_PLAN_RETRIES; attempt++) {
+    try {
+      if (attempt > 0) {
+        sendUpdate({ phase: 'planning', status: `Planning (retry ${attempt + 1})...` });
+        await new Promise(r => setTimeout(r, 2000));
+      }
+      sendUpdate({ phase: 'planning', status: 'Planning your project...' });
+
+      const raw = await openRouterFilePlan(messages, currentFilePaths);
+      console.log(`[Phase1] Plan response: ${raw.length} chars`);
+
+      const plan = extractJson(raw);
+      if (plan?.files && Array.isArray(plan.files) && plan.files.length > 0) {
+        // Validate file entries
+        const validFiles = plan.files.filter(f => f.path && f.description);
+        if (validFiles.length > 0) {
+          // Ensure /App.js and /index.css exist
+          if (!validFiles.find(f => f.path === '/App.js')) {
+            validFiles.unshift({ path: '/App.js', description: 'Main app component with layout and routing' });
+          }
+          if (!validFiles.find(f => f.path === '/index.css')) {
+            validFiles.push({ path: '/index.css', description: 'Global styles with CSS variables' });
+          }
+          console.log(`[Phase1] ✓ Plan has ${validFiles.length} files`);
+          return { projectTitle: plan.projectTitle || 'Generated Project', files: validFiles };
+        }
+      }
+
+      console.warn(`[Phase1] Attempt ${attempt + 1}: could not parse plan from response`);
+    } catch (e) {
+      console.warn(`[Phase1] Attempt ${attempt + 1} error: ${e.message?.slice(0, 150)}`);
+    }
+  }
+
+  // Fallback: return a sensible default plan
+  console.log('[Phase1] Using fallback plan');
+  return {
+    projectTitle: 'Generated Project',
+    files: [
+      { path: '/App.js', description: 'Main app component with layout' },
+      { path: '/index.css', description: 'Global styles with CSS variables and Tailwind utilities' },
+    ]
+  };
+}
+
+// ─── Phase 2: Generate Files One by One ─────────────────────────────
+
+async function generateFiles(plan, userRequest, sendUpdate) {
+  const CONCURRENCY = 2; // Generate 2 files at a time
+  const MAX_FILE_RETRIES = 3;
+  const fileResults = {};
+  const totalFiles = plan.files.length;
+
+  // Process files in batches for parallelism
+  for (let i = 0; i < totalFiles; i += CONCURRENCY) {
+    const batch = plan.files.slice(i, i + CONCURRENCY);
+
+    const batchPromises = batch.map(async (fileInfo, batchIdx) => {
+      const fileIdx = i + batchIdx;
+      const { path, description } = fileInfo;
+
+      sendUpdate({
+        phase: 'generating',
+        status: `Generating ${path} (${fileIdx + 1}/${totalFiles})...`,
+        currentFile: path,
+        progress: fileIdx,
+        total: totalFiles,
+      });
+
+      for (let retry = 0; retry < MAX_FILE_RETRIES; retry++) {
+        try {
+          if (retry > 0) {
+            console.log(`[Phase2] Retrying ${path} (attempt ${retry + 1})`);
+            await new Promise(r => setTimeout(r, 1500 * retry));
+          }
+
+          const rawCode = await openRouterSingleFile(userRequest, path, description, plan.files);
+          const code = cleanCodeResponse(rawCode);
+
+          if (code && code.length > 10) {
+            console.log(`[Phase2] ✓ ${path}: ${code.length} chars`);
+            return { path, code };
+          } else {
+            console.warn(`[Phase2] ${path}: response too short (${code?.length || 0} chars)`);
+          }
+        } catch (e) {
+          console.warn(`[Phase2] ${path} attempt ${retry + 1} error: ${e.message?.slice(0, 100)}`);
+        }
+      }
+
+      // If all retries failed, generate a placeholder
+      console.warn(`[Phase2] ✗ ${path}: all retries failed, using placeholder`);
+      const ext = path.split('.').pop();
+      if (ext === 'css') {
+        return { path, code: `/* ${description} */\n:root {\n  --primary: #6366f1;\n  --background: #0a0a0a;\n}\nbody { margin: 0; font-family: 'Inter', sans-serif; background: var(--background); color: #fff; }` };
+      }
+      return {
+        path,
+        code: `import React from 'react';\n\n// ${description}\nexport default function ${path.split('/').pop().replace('.js', '')}() {\n  return <div className="p-8 text-center text-gray-400">Loading ${path}...</div>;\n}`
+      };
+    });
+
+    const results = await Promise.all(batchPromises);
+    for (const r of results) {
+      if (r) fileResults[r.path] = { code: r.code };
+    }
+  }
+
+  return fileResults;
+}
+
+// ─── Phase 3 (Legacy Fallback): Monolithic Generation ───────────────
+
+function fixBadEscapes(text) {
+  let result = '', inString = false, i = 0;
   while (i < text.length) {
     const ch = text[i];
-
-    if (!inString) {
-      if (ch === '"') inString = true;
-      result += ch;
-      i++;
-    } else {
+    if (!inString) { if (ch === '"') inString = true; result += ch; i++; }
+    else {
       if (ch === '\\') {
         const next = text[i + 1];
         if (next === undefined) { i++; continue; }
-        if ('"\\/bfnrt'.includes(next)) {
-          result += ch + next; i += 2;
-        } else if (next === 'u') {
-          result += text.slice(i, i + 6); i += 6;
-        } else {
-          result += '\\\\' + next; i += 2;
-        }
-      } else if (ch === '"') {
-        inString = false; result += ch; i++;
-      } else if (ch === '\n') {
-        result += '\\n'; i++;
-      } else if (ch === '\r') {
-        result += '\\r'; i++;
-      } else if (ch === '\t') {
-        result += '\\t'; i++;
-      } else {
-        result += ch; i++;
-      }
+        if ('"\\/bfnrt'.includes(next)) { result += ch + next; i += 2; }
+        else if (next === 'u') { result += text.slice(i, i + 6); i += 6; }
+        else { result += '\\\\' + next; i += 2; }
+      } else if (ch === '"') { inString = false; result += ch; i++; }
+      else if (ch === '\n') { result += '\\n'; i++; }
+      else if (ch === '\r') { result += '\\r'; i++; }
+      else if (ch === '\t') { result += '\\t'; i++; }
+      else { result += ch; i++; }
     }
   }
   return result;
 }
 
-function extractJson(text) {
-  if (!text) return null;
-
-  // Remove <think>...</think> blocks (DeepSeek R1)
-  let cleaned = text.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
-
-  try { return JSON.parse(cleaned); } catch (_) { }
-
-  // Try markdown json block
-  const jsonMatch = cleaned.match(/```(?:json|jsonc)?\s*([\s\S]*?)\s*```/);
-  if (jsonMatch?.[1]) {
-    cleaned = jsonMatch[1].trim();
-    try { return JSON.parse(cleaned); } catch (_) { }
-  }
-
-  // Extract from first '{' to last '}'
-  const firstBrace = cleaned.indexOf('{');
-  const lastBrace = cleaned.lastIndexOf('}');
-  if (firstBrace !== -1 && lastBrace > firstBrace) {
-    cleaned = cleaned.slice(firstBrace, lastBrace + 1);
-    try { return JSON.parse(cleaned); } catch (_) { }
-  }
-
-  // Fix bad escapes
-  try { return JSON.parse(fixBadEscapes(cleaned)); } catch (_) { }
-
-  // Progressive cleanup
-  try {
-    let fixed = cleaned.replace(/,\s*}/g, '}').replace(/,\s*]/g, ']');
-    fixed = fixed.replace(/\/\/[^\n]*/g, '');
-    fixed = fixBadEscapes(fixed);
-    return JSON.parse(fixed);
-  } catch (_) { }
-
-  // Truncated-JSON recovery
-  try {
-    let attempt = fixBadEscapes(cleaned);
-    attempt = attempt.replace(/,\s*$/g, '');
-    let opens = 0, openBrackets = 0;
-    for (const ch of attempt) {
-      if (ch === '{') opens++;
-      else if (ch === '}') opens--;
-      else if (ch === '[') openBrackets++;
-      else if (ch === ']') openBrackets--;
-    }
-    if (attempt.match(/:\s*"[^"]*$/)) attempt += '"';
-    while (openBrackets > 0) { attempt += ']'; openBrackets--; }
-    while (opens > 0) { attempt += '}'; opens--; }
-    return JSON.parse(attempt);
-  } catch (e) {
-    console.warn(`extractJson: all attempts failed (${cleaned.length} chars):`, e.message);
-  }
-
-  return cleaned;
-}
-
-function tryParseCodeResult(fullText) {
+function tryParseLegacy(fullText) {
   try {
     const codeResult = extractJson(fullText);
-    let parsedData;
-    if (codeResult && typeof codeResult === "object") {
-      parsedData = codeResult;
-    } else if (typeof codeResult === "string") {
-      parsedData = JSON.parse(codeResult);
-    } else {
-      return null;
+    if (codeResult?.files && typeof codeResult.files === 'object') return codeResult;
+    // Try fix bad escapes
+    let cleaned = fullText.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+    const f = cleaned.indexOf('{'), l = cleaned.lastIndexOf('}');
+    if (f !== -1 && l > f) {
+      cleaned = cleaned.slice(f, l + 1);
+      try { return JSON.parse(fixBadEscapes(cleaned)); } catch (_) { }
     }
-
-    if (parsedData?.files && typeof parsedData.files === "object") {
-      return parsedData;
-    }
-
-    // Fallback: files at top level
-    const keys = Object.keys(parsedData || {});
-    if (keys.length > 0 && keys.some(k => k.startsWith('/')) && keys.some(k => parsedData[k]?.code)) {
-      return { files: parsedData, projectTitle: "Generated Project", explanation: "" };
-    }
-
-    return null;
-  } catch (e) {
-    console.warn("tryParseCodeResult failed:", e.message);
-    return null;
-  }
-}
-
-function extractFilesFromRawText(fullText) {
-  try {
-    const filesIdx = fullText.indexOf('"files"');
-    if (filesIdx === -1) return null;
-
-    const colonIdx = fullText.indexOf(':', filesIdx + 7);
-    if (colonIdx === -1) return null;
-
-    const braceIdx = fullText.indexOf('{', colonIdx);
-    if (braceIdx === -1) return null;
-
-    let depth = 0, end = -1;
-    for (let i = braceIdx; i < fullText.length; i++) {
-      if (fullText[i] === '{') depth++;
-      else if (fullText[i] === '}') { depth--; if (depth === 0) { end = i; break; } }
-    }
-    if (end === -1) return null;
-
-    const filesStr = fullText.slice(braceIdx, end + 1);
-    const files = JSON.parse(fixBadEscapes(filesStr));
-
-    if (typeof files === 'object' && Object.keys(files).length > 0) {
-      return { files, projectTitle: "Generated Project", explanation: "" };
-    }
-  } catch (e) {
-    console.warn("extractFilesFromRawText failed:", e.message);
-  }
+  } catch (_) { }
   return null;
 }
 
-export async function POST(req) {
-  const MAX_CODE_RETRIES = 4; // Increased from 3
+// ─── Main Handler ────────────────────────────────────────────────────
 
+export async function POST(req) {
   try {
     const { messages, currentFilePaths, includeSupabase, deployToVercel } = await req.json();
     const msgs = Array.isArray(messages) ? messages : [];
     const paths = Array.isArray(currentFilePaths) ? currentFilePaths : [];
 
+    // Build user request string from last user message
+    const lastUserMsg = msgs.filter(m => m.role === 'user').pop();
+    const userRequest = lastUserMsg?.content || 'Create a web application';
+
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
       async start(controller) {
         let closed = false;
-        const safeSend = (data) => {
+        const send = (data) => {
           if (closed) return;
           try { controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`)); }
           catch (_) { closed = true; }
         };
-        const safeClose = () => {
-          if (closed) return;
-          try { controller.close(); } catch (_) { }
-          closed = true;
-        };
+        const close = () => { if (!closed) { try { controller.close(); } catch (_) { } closed = true; } };
 
-        // Keepalive: send a ping every 15s to prevent Vercel/proxy from killing idle connection
-        const keepalive = setInterval(() => {
-          safeSend({ ping: true, timestamp: Date.now() });
-        }, 15_000);
+        // Keepalive every 12s
+        const keepalive = setInterval(() => send({ ping: true }), 12_000);
 
         try {
-          let parsedData = null;
-          let lastError = null;
+          // ────────────────────────────────────────────
+          // STRATEGY: Try phased generation first.
+          // If it fails completely, fall back to legacy monolithic.
+          // ────────────────────────────────────────────
 
-          for (let attempt = 0; attempt < MAX_CODE_RETRIES; attempt++) {
-            const isFirstAttempt = attempt === 0;
+          let files = null;
+          let projectTitle = 'Generated Project';
 
-            if (!isFirstAttempt) {
-              // Progressive backoff: 3s, 5s, 8s
-              const delay = [3000, 5000, 8000][attempt - 1] || 5000;
-              await new Promise(resolve => setTimeout(resolve, delay));
-              console.log(`[CodeGen] Retry ${attempt + 1}/${MAX_CODE_RETRIES} (waited ${delay}ms)`);
-              safeSend({
-                chunk: `\n\n⏳ Attempt ${attempt + 1}/${MAX_CODE_RETRIES} — trying a different AI model...\n`,
-                retry: attempt + 1,
-                maxRetries: MAX_CODE_RETRIES,
-              });
+          // ── PHASED GENERATION (Primary) ────────────
+          try {
+            send({ phase: 'planning', status: 'Planning your project structure...' });
+
+            // Phase 1: Plan
+            const plan = await getFilePlan(msgs, paths, send);
+            projectTitle = plan.projectTitle || 'Generated Project';
+            console.log(`[Route] Plan: ${plan.files.map(f => f.path).join(', ')}`);
+
+            send({
+              phase: 'planned',
+              status: `Project planned: ${plan.files.length} files`,
+              plan: plan.files.map(f => f.path),
+              total: plan.files.length,
+            });
+
+            // Phase 2: Generate each file
+            files = await generateFiles(plan, userRequest, send);
+
+            const fileCount = Object.keys(files).length;
+            if (fileCount > 0) {
+              console.log(`[Route] ✓ Phased generation: ${fileCount} files`);
+            } else {
+              throw new Error('No files generated');
             }
+          } catch (phasedError) {
+            console.warn(`[Route] Phased generation failed: ${phasedError.message}`);
+            send({ phase: 'fallback', status: 'Trying alternative approach...' });
 
+            // ── LEGACY FALLBACK (Monolithic) ────────────
             try {
-              const textStream = await openRouterCodeStream(msgs, paths, {
-                includeSupabase: !!includeSupabase,
-                deployToVercel: !!deployToVercel,
-              });
-
-              let fullText = "";
-              let chunkCount = 0;
+              const textStream = await openRouterCodeStream(msgs, paths, { includeSupabase, deployToVercel });
+              let fullText = '';
               for await (const delta of textStream) {
-                if (!delta) continue;
-                fullText += delta;
-                chunkCount++;
-                // Only stream to client on first attempt
-                if (isFirstAttempt) {
-                  safeSend({ chunk: delta });
-                }
-                // On retries, send periodic progress so client knows we're alive
-                if (!isFirstAttempt && chunkCount % 50 === 0) {
-                  safeSend({ progress: fullText.length, retry: attempt + 1 });
-                }
+                if (delta) fullText += delta;
               }
-
-              console.log(`[CodeGen] Attempt ${attempt + 1}: received ${fullText.length} chars, ${chunkCount} chunks`);
-
-              // Try to parse
-              parsedData = tryParseCodeResult(fullText);
-              if (!parsedData) {
-                parsedData = extractFilesFromRawText(fullText);
+              const parsed = tryParseLegacy(fullText);
+              if (parsed?.files) {
+                files = parsed.files;
+                projectTitle = parsed.projectTitle || projectTitle;
+                console.log(`[Route] ✓ Legacy fallback: ${Object.keys(files).length} files`);
               }
-
-              if (parsedData) {
-                const fileCount = Object.keys(parsedData.files || {}).length;
-                console.log(`[CodeGen] ✓ Success on attempt ${attempt + 1}: ${fileCount} files`);
-                safeSend({ final: parsedData, done: true, result: fullText });
-                break;
-              } else {
-                lastError = "Failed to parse AI response as valid code JSON";
-                console.warn(`[CodeGen] Attempt ${attempt + 1}: parse failed from ${fullText.length} chars`);
-                console.warn(`[CodeGen] Preview: ${fullText.slice(0, 500)}`);
-              }
-            } catch (e) {
-              lastError = e.message || "Code generation failed";
-              console.warn(`[CodeGen] Attempt ${attempt + 1} error: ${lastError.slice(0, 200)}`);
+            } catch (legacyError) {
+              console.error(`[Route] Legacy fallback also failed: ${legacyError.message}`);
             }
           }
 
-          if (!parsedData) {
-            console.error("[CodeGen] All attempts failed:", lastError);
-            safeSend({
-              error: sanitizeError(lastError),
-              rawError: lastError,
+          if (files && Object.keys(files).length > 0) {
+            send({
+              phase: 'done',
+              status: 'Project generated successfully!',
+              final: { projectTitle, files, explanation: `Generated ${Object.keys(files).length} files` },
+              done: true,
+            });
+          } else {
+            send({
+              error: 'Could not generate code. Please try again — AI servers may be overloaded.',
               done: true,
             });
           }
 
           clearInterval(keepalive);
-          safeClose();
+          close();
         } catch (e) {
           clearInterval(keepalive);
-          console.error("[CodeGen] Fatal stream error:", e);
-          safeSend({
-            error: sanitizeError(e.message),
-            rawError: e.message,
-            done: true,
-          });
-          safeClose();
+          console.error('[Route] Fatal:', e);
+          send({ error: sanitizeError(e.message), done: true });
+          close();
         }
       },
     });
 
     return new Response(stream, {
-      headers: {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        Connection: "keep-alive",
-      },
+      headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" },
     });
   } catch (e) {
-    return new Response(
-      JSON.stringify({
-        error: e.message || "Code generation failed",
-        rawError: e.message,
-      }),
-      {
-        status: 500,
-        headers: { "Content-Type": "application/json" },
-      }
-    );
+    return new Response(JSON.stringify({ error: e.message || "Server error" }), {
+      status: 500, headers: { "Content-Type": "application/json" },
+    });
   }
 }

@@ -1,12 +1,12 @@
 /**
- * AiModel.jsx — Production-ready OpenRouter integration (v2 — bulletproof)
+ * AiModel.jsx — Phased Code Generation (v3)
  *
- * Key improvements over v1:
- *   • Per-model streaming timeout (90s) — if a model hangs, skip to next
- *   • No warmup probing — cold start is instant, models tried on-demand
- *   • Smarter model ordering — fastest/most-reliable models first
- *   • Aggressive failover across all key×model combos
- *   • AbortController-based timeouts on every streaming call
+ * Key design: instead of generating all files at once (16K+ tokens, slow, unreliable),
+ * we break it into phases:
+ *   Phase 1: Plan — get a list of files needed (~500 tokens, 3s)
+ *   Phase 2: Generate — produce each file individually (~1-2K tokens each, 5s)
+ *
+ * This works reliably with free models because each request is small.
  */
 
 import Prompt from "@/data/Prompt";
@@ -30,7 +30,7 @@ function collectApiKeys() {
 const API_KEYS = collectApiKeys();
 
 if (API_KEYS.length === 0) {
-  console.warn("[TechWiser] ⚠ No OPENROUTER_API_KEY found. AI will not work.");
+  console.warn("[TechWiser] ⚠ No OPENROUTER_API_KEY found.");
 } else {
   console.log(`[TechWiser] Loaded ${API_KEYS.length} OpenRouter API key(s)`);
 }
@@ -38,7 +38,7 @@ if (API_KEYS.length === 0) {
 // --- Key Health Tracking ---------------------------------------------
 
 const keyStatus = API_KEYS.map(() => ({ exhausted: false, exhaustedAt: 0, failCount: 0 }));
-const COOLDOWN_MS = 3 * 60 * 1000; // 3 min cooldown (reduced from 5)
+const COOLDOWN_MS = 2 * 60 * 1000;
 const EXHAUST_THRESHOLD = 3;
 
 function getActiveKeyIndex() {
@@ -51,7 +51,6 @@ function getActiveKeyIndex() {
       return i;
     }
   }
-  // All exhausted — reset oldest
   let oldest = 0;
   for (let i = 1; i < keyStatus.length; i++) {
     if (keyStatus[i].exhaustedAt < keyStatus[oldest].exhaustedAt) oldest = i;
@@ -66,84 +65,112 @@ function markKeyExhausted(idx) {
   if (keyStatus[idx].failCount >= EXHAUST_THRESHOLD) {
     keyStatus[idx].exhausted = true;
     keyStatus[idx].exhaustedAt = Date.now();
-    console.log(`[Keys] Key #${idx + 1} marked exhausted after ${keyStatus[idx].failCount} failures`);
+    console.log(`[Keys] Key #${idx + 1} exhausted after ${keyStatus[idx].failCount} failures`);
   }
 }
 
-function resetKeyFailCount(idx) {
+function resetKeyFails(idx) {
   keyStatus[idx].failCount = 0;
 }
 
 function isRateLimitError(status, body) {
   if (status === 429 || status === 402) return true;
   const msg = (typeof body === "string" ? body : JSON.stringify(body || "")).toLowerCase();
-  if (msg.includes("rate limit") && !msg.includes("model")) return true;
-  if (msg.includes("credits") && (msg.includes("insufficient") || msg.includes("exhausted"))) return true;
-  if (msg.includes("quota") && (msg.includes("exceeded") || msg.includes("exhausted"))) return true;
-  if (msg.includes("billing") || msg.includes("payment required")) return true;
-  return false;
+  return msg.includes("rate limit") || msg.includes("credits") || msg.includes("quota") || msg.includes("billing") || msg.includes("payment required");
 }
 
-// --- Model Lists (ordered by reliability for code generation) --------
+// --- Model Lists -----------------------------------------------------
 
-const MODELS = [
-  "deepseek/deepseek-chat-v3-0324:free",      // Fast, good at code
-  "deepseek/deepseek-r1-0528:free",            // Reasoning model, slower but better quality
-  "mistralai/devstral-2512:free",              // Code-focused
-  "meta-llama/llama-3.3-70b-instruct:free",    // Reliable fallback
-  "google/gemini-2.0-flash-exp:free",          // Fast
-  "google/gemma-3-27b-it:free",
-  "stepfun/step-3.5-flash:free",
-  "nvidia/nemotron-3-nano-30b-a3b:free",
-];
-
-const PLANNING_MODELS = [
+const FAST_MODELS = [
   "deepseek/deepseek-chat-v3-0324:free",
   "google/gemini-2.0-flash-exp:free",
+  "meta-llama/llama-3.3-70b-instruct:free",
+  "mistralai/devstral-2512:free",
   "stepfun/step-3.5-flash:free",
 ];
 
-// --- Per-Model Timeout Tracking --------------------------------------
-// Track which models recently failed so we skip them on subsequent attempts
+const CODE_MODELS = [
+  "deepseek/deepseek-chat-v3-0324:free",
+  "mistralai/devstral-2512:free",
+  "deepseek/deepseek-r1-0528:free",
+  "meta-llama/llama-3.3-70b-instruct:free",
+  "google/gemini-2.0-flash-exp:free",
+  "google/gemma-3-27b-it:free",
+];
 
-const modelHealth = new Map(); // model -> { lastFail: timestamp, consecutiveFails: number }
+// --- Model Health Tracking -------------------------------------------
+
+const modelHealth = new Map();
 
 function isModelHealthy(model) {
-  const health = modelHealth.get(model);
-  if (!health) return true;
-  // If model failed recently (last 2 min) and has 2+ consecutive fails, skip it
-  if (health.consecutiveFails >= 2 && Date.now() - health.lastFail < 2 * 60 * 1000) {
-    return false;
-  }
+  const h = modelHealth.get(model);
+  if (!h) return true;
+  if (h.fails >= 2 && Date.now() - h.lastFail < 2 * 60 * 1000) return false;
   return true;
 }
 
 function markModelFailed(model) {
-  const health = modelHealth.get(model) || { lastFail: 0, consecutiveFails: 0 };
-  health.lastFail = Date.now();
-  health.consecutiveFails++;
-  modelHealth.set(model, health);
+  const h = modelHealth.get(model) || { lastFail: 0, fails: 0 };
+  h.lastFail = Date.now();
+  h.fails++;
+  modelHealth.set(model, h);
 }
 
-function markModelSuccess(model) {
-  modelHealth.set(model, { lastFail: 0, consecutiveFails: 0 });
+function markModelOk(model) {
+  modelHealth.set(model, { lastFail: 0, fails: 0 });
+}
+
+// --- Core: Non-streaming fetch with timeout --------------------------
+
+async function fetchCompletion(apiKey, model, messages, opts = {}) {
+  const controller = new AbortController();
+  const timeout = opts.timeout || 60_000;
+  const timer = setTimeout(() => controller.abort(), timeout);
+
+  try {
+    const body = { model, messages };
+    if (opts.maxTokens) body.max_tokens = opts.maxTokens;
+    if (opts.temperature !== undefined) body.temperature = opts.temperature;
+
+    const res = await fetch(OPENROUTER_BASE, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+        "HTTP-Referer": siteUrl,
+        "X-Title": siteName,
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => "");
+      const err = new Error(`HTTP ${res.status}: ${errBody.slice(0, 300)}`);
+      err.status = res.status;
+      err.body = errBody;
+      throw err;
+    }
+
+    const data = await res.json();
+    return data?.choices?.[0]?.message?.content || "";
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // --- Core: Streaming fetch with per-model timeout --------------------
 
-const PER_MODEL_TIMEOUT_MS = 90_000;      // 90s per model attempt
-const FIRST_CHUNK_TIMEOUT_MS = 30_000;     // 30s to get first chunk (or model is dead)
+const PER_MODEL_TIMEOUT_MS = 90_000;
+const FIRST_CHUNK_TIMEOUT_MS = 25_000;
 
-async function* streamChatRaw(apiKey, model, messages, options = {}) {
+async function* streamChat(apiKey, model, messages, opts = {}) {
   const controller = new AbortController();
-
-  // Overall per-model timeout
   const overallTimer = setTimeout(() => controller.abort(), PER_MODEL_TIMEOUT_MS);
 
   try {
     const body = { model, messages, stream: true };
-    if (options.maxTokens) body.max_tokens = options.maxTokens;
-    if (options.jsonMode) body.response_format = { type: "json_object" };
+    if (opts.maxTokens) body.max_tokens = opts.maxTokens;
 
     const res = await fetch(OPENROUTER_BASE, {
       method: "POST",
@@ -168,34 +195,25 @@ async function* streamChatRaw(apiKey, model, messages, options = {}) {
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buf = "";
-    let gotFirstChunk = false;
+    let gotFirst = false;
 
-    // First-chunk timeout: if no data in 30s, model is stuck
-    let firstChunkTimer = setTimeout(() => {
-      if (!gotFirstChunk) controller.abort();
-    }, FIRST_CHUNK_TIMEOUT_MS);
+    const firstTimer = setTimeout(() => { if (!gotFirst) controller.abort(); }, FIRST_CHUNK_TIMEOUT_MS);
 
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
 
-      if (!gotFirstChunk) {
-        gotFirstChunk = true;
-        clearTimeout(firstChunkTimer);
-      }
+      if (!gotFirst) { gotFirst = true; clearTimeout(firstTimer); }
 
       buf += decoder.decode(value, { stream: true });
       const lines = buf.split("\n");
       buf = lines.pop();
 
       for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith(":")) continue;
-        if (!trimmed.startsWith("data: ")) continue;
-
-        const payload = trimmed.slice(6);
+        const t = line.trim();
+        if (!t || t.startsWith(":") || !t.startsWith("data: ")) continue;
+        const payload = t.slice(6);
         if (payload === "[DONE]") return;
-
         try {
           const parsed = JSON.parse(payload);
           const delta = parsed?.choices?.[0]?.delta?.content;
@@ -208,247 +226,161 @@ async function* streamChatRaw(apiKey, model, messages, options = {}) {
   }
 }
 
-async function chatCompletionRaw(apiKey, model, messages) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 60_000); // 60s for non-streaming
+// --- Fallback Engine -------------------------------------------------
 
-  try {
-    const res = await fetch(OPENROUTER_BASE, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-        "HTTP-Referer": siteUrl,
-        "X-Title": siteName,
-      },
-      body: JSON.stringify({ model, messages }),
-      signal: controller.signal,
-    });
-
-    if (!res.ok) {
-      const errBody = await res.text().catch(() => "");
-      const err = new Error(`HTTP ${res.status}: ${errBody.slice(0, 300)}`);
-      err.status = res.status;
-      err.body = errBody;
-      throw err;
-    }
-
-    const data = await res.json();
-    return data?.choices?.[0]?.message?.content || "";
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-// --- Fallback Engine (no warmup needed) ------------------------------
-
-/**
- * Build all key×model combos, skip unhealthy models/keys.
- */
 function getOrderedCombos(models) {
   const combos = [];
   for (const model of models) {
-    if (!isModelHealthy(model)) {
-      console.log(`[AI] Skipping temporarily unhealthy model: ${model}`);
-      continue;
-    }
-    for (let keyIdx = 0; keyIdx < API_KEYS.length; keyIdx++) {
-      combos.push({ keyIdx, model });
+    if (!isModelHealthy(model)) continue;
+    for (let ki = 0; ki < API_KEYS.length; ki++) {
+      if (!keyStatus[ki].exhausted) combos.push({ ki, model });
     }
   }
-
-  // If all models were unhealthy, try them all anyway (last resort)
   if (combos.length === 0) {
-    console.warn("[AI] All models unhealthy — trying everything");
     for (const model of models) {
-      for (let keyIdx = 0; keyIdx < API_KEYS.length; keyIdx++) {
-        combos.push({ keyIdx, model });
+      for (let ki = 0; ki < API_KEYS.length; ki++) {
+        combos.push({ ki, model });
       }
     }
   }
-
   return combos;
 }
 
-/**
- * Try key×model combos until one works. Per-model timeout ensures
- * we never wait more than 90s for a single model.
- */
-async function callWithFallback(messages, models, streamOptions = {}) {
-  if (API_KEYS.length === 0) {
-    throw new Error("No OpenRouter API keys configured. Set OPENROUTER_API_KEY in environment variables.");
-  }
-
-  const combos = getOrderedCombos(models);
-  let lastError;
-  let attemptCount = 0;
-
-  for (const { keyIdx, model } of combos) {
-    if (keyStatus[keyIdx].exhausted) continue;
-    attemptCount++;
-
-    try {
-      console.log(`[AI] Attempt ${attemptCount}: Key #${keyIdx + 1} → ${model}`);
-      const gen = streamChatRaw(API_KEYS[keyIdx], model, messages, streamOptions);
-
-      // Probe first chunk to verify stream works
-      const reader = gen[Symbol.asyncIterator]();
-      const first = await reader.next();
-
-      if (first.done) {
-        throw new Error("Empty response (stream ended immediately)");
-      }
-
-      async function* replayStream() {
-        yield first.value;
-        while (true) {
-          const { value, done } = await reader.next();
-          if (done) break;
-          yield value;
-        }
-      }
-
-      console.log(`[AI] ✓ Key #${keyIdx + 1} → ${model}`);
-      resetKeyFailCount(keyIdx);
-      markModelSuccess(model);
-      return replayStream();
-    } catch (error) {
-      const reason = error.name === 'AbortError' ? 'TIMEOUT' : error.message?.slice(0, 150);
-      console.warn(`[AI] ✗ Key #${keyIdx + 1} → ${model}: ${reason}`);
-      lastError = error;
-      markModelFailed(model);
-
-      if (isRateLimitError(error.status, error.body)) {
-        markKeyExhausted(keyIdx);
-      }
-
-      // Small delay between attempts to avoid hammering
-      if (attemptCount < combos.length) {
-        await new Promise(r => setTimeout(r, 500));
-      }
-    }
-  }
-
-  if (lastError && isRateLimitError(lastError.status, lastError.body)) {
-    throw new Error("AI servers are busy. Please wait a moment and try again.");
-  }
-  throw lastError || new Error("All models and API keys failed. Please try again.");
-}
-
-async function callNonStreamingWithFallback(messages, models) {
-  if (API_KEYS.length === 0) {
-    throw new Error("No OpenRouter API keys configured.");
-  }
-
+async function callNonStreaming(messages, models, opts = {}) {
+  if (API_KEYS.length === 0) throw new Error("No OpenRouter API keys configured.");
   const combos = getOrderedCombos(models);
   let lastError;
 
-  for (const { keyIdx, model } of combos) {
-    if (keyStatus[keyIdx].exhausted) continue;
-
+  for (const { ki, model } of combos) {
     try {
-      console.log(`[AI-NS] Key #${keyIdx + 1} → ${model}`);
-      const content = await chatCompletionRaw(API_KEYS[keyIdx], model, messages);
+      console.log(`[AI] Try: Key#${ki + 1} → ${model}`);
+      const content = await fetchCompletion(API_KEYS[ki], model, messages, opts);
       if (!content) throw new Error("Empty response");
-      console.log(`[AI-NS] ✓ Key #${keyIdx + 1} → ${model}`);
-      resetKeyFailCount(keyIdx);
-      markModelSuccess(model);
+      console.log(`[AI] ✓ Key#${ki + 1} → ${model} (${content.length} chars)`);
+      resetKeyFails(ki);
+      markModelOk(model);
       return content;
-    } catch (error) {
-      console.warn(`[AI-NS] ✗ Key #${keyIdx + 1} → ${model}: ${error.message?.slice(0, 150)}`);
-      lastError = error;
+    } catch (e) {
+      const reason = e.name === 'AbortError' ? 'TIMEOUT' : e.message?.slice(0, 100);
+      console.warn(`[AI] ✗ Key#${ki + 1} → ${model}: ${reason}`);
+      lastError = e;
       markModelFailed(model);
-
-      if (isRateLimitError(error.status, error.body)) {
-        markKeyExhausted(keyIdx);
-        await new Promise(r => setTimeout(r, 1000));
-      }
+      if (isRateLimitError(e.status, e.body)) markKeyExhausted(ki);
+      await new Promise(r => setTimeout(r, 300));
     }
-  }
-
-  if (lastError && isRateLimitError(lastError.status, lastError.body)) {
-    throw new Error("AI servers are busy. Please wait a moment and try again.");
   }
   throw lastError || new Error("All models failed.");
 }
 
-// --- Exported API ----------------------------------------------------
+async function callStreaming(messages, models, opts = {}) {
+  if (API_KEYS.length === 0) throw new Error("No OpenRouter API keys configured.");
+  const combos = getOrderedCombos(models);
+  let lastError;
 
+  for (const { ki, model } of combos) {
+    try {
+      console.log(`[AI-S] Try: Key#${ki + 1} → ${model}`);
+      const gen = streamChat(API_KEYS[ki], model, messages, opts);
+      const reader = gen[Symbol.asyncIterator]();
+      const first = await reader.next();
+      if (first.done) throw new Error("Empty stream");
+
+      async function* replay() {
+        yield first.value;
+        while (true) { const { value, done } = await reader.next(); if (done) break; yield value; }
+      }
+
+      console.log(`[AI-S] ✓ Key#${ki + 1} → ${model}`);
+      resetKeyFails(ki);
+      markModelOk(model);
+      return replay();
+    } catch (e) {
+      const reason = e.name === 'AbortError' ? 'TIMEOUT' : e.message?.slice(0, 100);
+      console.warn(`[AI-S] ✗ Key#${ki + 1} → ${model}: ${reason}`);
+      lastError = e;
+      markModelFailed(model);
+      if (isRateLimitError(e.status, e.body)) markKeyExhausted(ki);
+      await new Promise(r => setTimeout(r, 300));
+    }
+  }
+  throw lastError || new Error("All models failed.");
+}
+
+// --- Exported APIs ---------------------------------------------------
+
+/** Chat stream (for chat panel) */
 export async function openRouterChatStream(messages) {
-  const systemPrompt = `You are TechWiser, an AI web builder. You help users describe what they want—the actual code is generated separately and shown in the Preview panel.
+  const systemPrompt = `You are TechWiser, an AI web builder. You help users describe what they want—the actual code is generated separately.
+**NEVER output code.** Use ONLY plain natural language (1-2 short sentences). Do NOT ask questions.`;
 
-**CRITICAL: NEVER output code.** Do NOT write HTML, JavaScript, JSON, CSS, or any technical syntax in your replies. Use ONLY plain natural language (1-2 short sentences). Examples: "I'm building your todo app with a modern design." or "Adding a dark mode toggle to match your request."
-
-- Do NOT ask questions. Make reasonable assumptions.
-- MEMORY: Remember what you built. When the user asks for changes, confirm you'll update the project—never start from scratch unless asked.`;
-
-  const formatted = Array.isArray(messages) && messages.length > 0
-    ? [
-      { role: "system", content: systemPrompt },
-      ...messages.map((m) => ({
-        role: m.role === "ai" ? "assistant" : m.role,
-        content: m.content || "",
-      })),
-    ]
-    : [{ role: "system", content: systemPrompt }];
-
-  return callWithFallback(formatted, MODELS);
+  const formatted = [
+    { role: "system", content: systemPrompt },
+    ...messages.map(m => ({ role: m.role === "ai" ? "assistant" : m.role, content: m.content || "" })),
+  ];
+  return callStreaming(formatted, FAST_MODELS);
 }
 
-export async function openRouterPlanStream(messages) {
-  const systemPrompt = `You are TechWiser's planning engine. Output ONLY a compact JSON "BUILD_PLAN" with: sitemap (pages), components (list), mockDataSchema, routes, designNotes. No code. Max 300 words. Be specific. Do NOT wrap in markdown code fences. Output raw JSON only.`;
-
-  const formatted = Array.isArray(messages) && messages.length > 0
-    ? [
-      { role: "system", content: systemPrompt },
-      ...messages.map((m) => ({
-        role: m.role === "ai" ? "assistant" : m.role,
-        content: m.content || "",
-      })),
-    ]
-    : [{ role: "system", content: systemPrompt }];
-
-  return callWithFallback(formatted, PLANNING_MODELS);
-}
-
-export async function openRouterCodeStream(messages, currentFilePaths = [], options = {}) {
-  const { includeSupabase, deployToVercel } = options;
-
+/** Phase 1: Get file plan (non-streaming, small response) */
+export async function openRouterFilePlan(messages, currentFilePaths = []) {
   const memoryNote = currentFilePaths.length > 0
-    ? `\nCURRENT PROJECT FILES (update these, do NOT recreate from scratch): ${currentFilePaths.join(", ")}`
-    : "";
-  const supabaseNote = includeSupabase
-    ? `\nInclude Supabase client setup (@supabase/supabase-js) with lib/supabase.js and auth helpers.`
-    : "";
-  const vercelNote = deployToVercel
-    ? `\nEnsure Vercel-compatible build setup.`
+    ? `\nEXISTING FILES (update these, don't recreate): ${currentFilePaths.join(", ")}`
     : "";
 
-  const systemPrompt = `${Prompt.CODE_GEN_PROMPT}${memoryNote}${supabaseNote}${vercelNote}
-
-REMINDER: Your ENTIRE response must be a single valid JSON object with a "files" key. Nothing else.`;
-
-  const formatted = Array.isArray(messages) && messages.length > 0
-    ? [
-      { role: "system", content: systemPrompt },
-      ...messages.map((m) => ({
-        role: m.role === "ai" ? "assistant" : m.role,
-        content: m.content || "",
-      })),
-    ]
-    : [{ role: "system", content: systemPrompt }];
-
-  return callWithFallback(formatted, MODELS, { maxTokens: 16384 });
+  const formatted = [
+    { role: "system", content: `${Prompt.FILE_PLAN_PROMPT}${memoryNote}` },
+    ...messages.map(m => ({ role: m.role === "ai" ? "assistant" : m.role, content: m.content || "" })),
+  ];
+  return callNonStreaming(formatted, FAST_MODELS, { maxTokens: 2048, timeout: 45_000, temperature: 0.3 });
 }
 
+/** Phase 2: Generate a single file (non-streaming, focused response) */
+export async function openRouterSingleFile(userRequest, fileName, fileDescription, otherFiles = []) {
+  const otherFilesNote = otherFiles.length > 0
+    ? `\nOther files in this project: ${otherFiles.map(f => f.path).join(", ")}. Import from them as needed.`
+    : "";
+
+  const formatted = [
+    { role: "system", content: `${Prompt.SINGLE_FILE_PROMPT}${otherFilesNote}` },
+    {
+      role: "user",
+      content: `PROJECT REQUEST: ${userRequest}
+
+GENERATE FILE: ${fileName}
+DESCRIPTION: ${fileDescription}
+
+Output ONLY the raw source code for this file. No JSON wrapping. No markdown. Just code.`
+    },
+  ];
+  return callNonStreaming(formatted, CODE_MODELS, { maxTokens: 4096, timeout: 60_000, temperature: 0.2 });
+}
+
+/** Legacy: Full code stream (fallback if phased fails) */
+export async function openRouterCodeStream(messages, currentFilePaths = [], options = {}) {
+  const memoryNote = currentFilePaths.length > 0
+    ? `\nCURRENT FILES (update, don't recreate): ${currentFilePaths.join(", ")}`
+    : "";
+
+  const formatted = [
+    { role: "system", content: `${Prompt.CODE_GEN_PROMPT}${memoryNote}\n\nREMINDER: Respond with ONLY valid JSON with a "files" key.` },
+    ...messages.map(m => ({ role: m.role === "ai" ? "assistant" : m.role, content: m.content || "" })),
+  ];
+  return callStreaming(formatted, CODE_MODELS, { maxTokens: 16384 });
+}
+
+/** Enhance prompt (non-streaming) */
 export async function openRouterEnhance(promptWithRules) {
   const formatted = [
-    {
-      role: "system",
-      content: "You help non-technical people describe the website they want, using clear, friendly language and no technical terms.",
-    },
+    { role: "system", content: "You help non-technical people describe websites they want, using clear, friendly language. No code." },
     { role: "user", content: promptWithRules },
   ];
+  return callNonStreaming(formatted, FAST_MODELS);
+}
 
-  return callNonStreamingWithFallback(formatted, MODELS);
+/** Plan stream (for build planning) */
+export async function openRouterPlanStream(messages) {
+  const formatted = [
+    { role: "system", content: `You are TechWiser's planning engine. Output ONLY compact JSON "BUILD_PLAN" with: sitemap, components, mockDataSchema, routes, designNotes. No code. Max 300 words. Raw JSON only.` },
+    ...messages.map(m => ({ role: m.role === "ai" ? "assistant" : m.role, content: m.content || "" })),
+  ];
+  return callStreaming(formatted, FAST_MODELS);
 }
