@@ -19,7 +19,6 @@ export const metadata = {
     statusBarStyle: "black-translucent",
     title: "TechWiser",
   },
-  themeColor: "#7c3aed",
 };
 
 export const viewport = {
@@ -28,6 +27,7 @@ export const viewport = {
   maximumScale: 1,
   userScalable: false,
   viewportFit: "cover",
+  themeColor: "#7c3aed",
 };
 
 export default function RootLayout({ children }) {
