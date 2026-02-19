@@ -110,6 +110,10 @@ const Prompt = {
   - Output ONLY the raw code. No \`\`\` fences. No "Here is the code:" prefix. Just code.
   - Make the code COMPLETE and WORKING — no placeholders, no TODOs, no stubs.
   - Import from other project files using relative paths (e.g. import Navbar from './components/Navbar')
+  - **INTERACTION RULES:**
+    - EVERY \`onClick\`, \`onChange\`, \`onSubmit\` MUST have a fully implemented function.
+    - NO empty functions (e.g. \`const handleClick = () => {}\`). Write the actual logic (e.g. update state, alert).
+    - Verify that ALL variables used in JSX are defined. Do not use undefined variables.
   `,
 
   ENHANCE_PROMPT_RULES: dedent`
@@ -126,16 +130,21 @@ const Prompt = {
   FIX_PLAN_PROMPT: dedent`
   You are an expert AI code debugger.
   Analyze the provided Runtime Error and Project Files.
-  Identify the ONE file that causes the error.
+  Identify the ONE file that needs to be created or updated to fix the error.
+
+  Rules:
+  1. If a module is missing (e.g. "Module not found"), return the path of the MISSING file to create.
+  2. If a file has a syntax/logic error, return that file's path.
+  3. Return ONLY a JSON object.
 
   Return a JSON object with:
-  - "fileToUpdate": The path of the file to fix (e.g., "/App.js")
+  - "fileToUpdate": The path of the file to fix/create (e.g., "/components/Header.js")
   - "instructions": Brief instructions for the fix.
 
   Example Output:
   {
     "fileToUpdate": "/components/TodoList.js",
-    "instructions": "Fix undefined 'todos' variable by initializing it as an empty array."
+    "instructions": "Create this file with a default export component."
   }
   `,
 };

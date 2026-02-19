@@ -280,8 +280,10 @@ export async function POST(req) {
                 }
               } catch (fixError) {
                 console.warn(`[SmartFix] Failed: ${fixError.message}`);
-                // Fall through to normal generation if fix fails
+                send({ error: `Fix failed: ${fixError.message}. Please try again.` });
+                return; // STOP HERE - Do not fall back to full regen
               }
+              return; // Stop after fix attempt (success or fail)
             }
 
             if (!files) {
