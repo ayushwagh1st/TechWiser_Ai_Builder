@@ -2,6 +2,7 @@ import { Inter } from "next/font/google";
 import "./globals.css";
 import Provider from "./provider";
 import ConvexClientProvider from "./ConvexClientProvider";
+import { Analytics } from "@vercel/analytics/next";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -44,6 +45,7 @@ export default function RootLayout({ children }) {
             {children}
           </Provider>
         </ConvexClientProvider>
+        <Analytics />
       </body>
     </html>
   );
