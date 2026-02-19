@@ -329,24 +329,46 @@ export async function openRouterFilePlan(messages, currentFilePaths = []) {
 }
 
 /** Phase 2: Generate a single file (non-streaming, focused response) */
-export async function openRouterSingleFile(userRequest, fileName, fileDescription, otherFiles = []) {
+/** Phase 2: Generate a single file (non-streaming, focused response) */
+export async function openRouterSingleFile(userRequest, fileName, fileDescription, otherFiles = [], originalCode = null) {
   const otherFilesNote = otherFiles.length > 0
     ? `\nOther files in this project: ${otherFiles.map(f => f.path).join(", ")}. Import from them as needed.`
     : "";
 
+  let promptContent = "";
+  if (originalCode) {
+    promptContent = `
+     **CRITICAL: FIXING EXISTING CODE**
+     Here is the CURRENT content of ${fileName}:
+     
+     \`\`\`javascript
+     ${originalCode}
+     \`\`\`
+ 
+     ACTION:
+     1. Read the error/request: "${userRequest}"
+     2. Read the current code above.
+     3. Output the FULLY FIXED file content.
+     4. DO NOT remove existing features or imports unless they are the bug.
+     5. KEEP the same export structure.
+     `;
+  } else {
+    promptContent = `
+     PROJECT REQUEST: ${userRequest}
+
+     GENERATE FILE: ${fileName}
+     DESCRIPTION: ${fileDescription}
+
+     Output ONLY the raw source code for this file. No JSON wrapping. No markdown. Just code.
+     `;
+  }
+
   const formatted = [
     { role: "system", content: `${Prompt.SINGLE_FILE_PROMPT}${otherFilesNote}` },
-    {
-      role: "user",
-      content: `PROJECT REQUEST: ${userRequest}
-
-GENERATE FILE: ${fileName}
-DESCRIPTION: ${fileDescription}
-
-Output ONLY the raw source code for this file. No JSON wrapping. No markdown. Just code.`
-    },
+    { role: "user", content: promptContent },
   ];
-  return callNonStreaming(formatted, CODE_MODELS, { maxTokens: 4096, timeout: 60_000, temperature: 0.2 });
+  // Increase max tokens for full file rewrites
+  return callNonStreaming(formatted, CODE_MODELS, { maxTokens: 8000, timeout: 90_000, temperature: 0.2 });
 }
 
 /** Legacy: Full code stream (fallback if phased fails) */

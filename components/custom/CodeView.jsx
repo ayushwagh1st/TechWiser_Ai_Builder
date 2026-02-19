@@ -107,6 +107,7 @@ function CodeView() {
             body: JSON.stringify({
                 messages,
                 currentFilePaths: currentFilePaths.length > 0 ? currentFilePaths : undefined,
+                files: files, // Send full file content for context execution
                 includeSupabase: buildOptions?.includeSupabase,
                 deployToVercel: buildOptions?.deployToVercel,
             }),

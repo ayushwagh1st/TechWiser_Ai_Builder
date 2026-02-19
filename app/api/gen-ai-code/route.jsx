@@ -207,7 +207,7 @@ function tryParseLegacy(fullText) {
 
 export async function POST(req) {
   try {
-    const { messages, currentFilePaths, includeSupabase, deployToVercel } = await req.json();
+    const { messages, currentFilePaths, files: reqFiles, includeSupabase, deployToVercel } = await req.json();
     const msgs = Array.isArray(messages) ? messages : [];
     const paths = Array.isArray(currentFilePaths) ? currentFilePaths : [];
 
@@ -259,10 +259,18 @@ export async function POST(req) {
                   send({ phase: 'generating', status: `Fixing ${targetFile}...`, currentFile: targetFile });
                   isFixMode = true;
 
+                  // Extract original code if available
+                  let originalCode = null;
+                  if (reqFiles && (reqFiles[targetFile] || reqFiles[targetFile.substring(1)])) {
+                    const f = reqFiles[targetFile] || reqFiles[targetFile.substring(1)];
+                    originalCode = typeof f === 'string' ? f : f.code;
+                    console.log(`[SmartFix] Found original code for ${targetFile} (${originalCode?.length} chars)`);
+                  }
+
                   // Use specific prompt for fixing
                   const fixPrompt = `You are fixing a bug in ${targetFile}. The error reported is: "${userRequest}".\n\nExisting code context is provided. Rewrite the entire file to fix the error. Return ONLY code.`;
 
-                  const rawCode = await openRouterSingleFile(fixPrompt, targetFile, fixPlan.instructions || "Fix the error", [{ path: targetFile, description: "File to fix" }]);
+                  const rawCode = await openRouterSingleFile(fixPrompt, targetFile, fixPlan.instructions || "Fix the error", [{ path: targetFile, description: "File to fix" }], originalCode);
                   const code = cleanCodeResponse(rawCode);
 
                   if (code && code.length > 10) {
