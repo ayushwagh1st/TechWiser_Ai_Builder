@@ -82,20 +82,15 @@ function isRateLimitError(status, body) {
 // --- Model Lists -----------------------------------------------------
 
 const FAST_MODELS = [
-  "deepseek/deepseek-chat-v3-0324:free",
-  "google/gemini-2.0-flash-exp:free",
-  "meta-llama/llama-3.3-70b-instruct:free",
-  "mistralai/devstral-2512:free",
-  "stepfun/step-3.5-flash:free",
+  "stepfun/step-3.5-flash:free",             // User requested
+  "deepseek/deepseek-r1-0528:free",          // User requested
+  "arcee-ai/trinity-large-preview:free",     // User requested
 ];
 
 const CODE_MODELS = [
-  "deepseek/deepseek-chat-v3-0324:free",
-  "mistralai/devstral-2512:free",
-  "deepseek/deepseek-r1-0528:free",
-  "meta-llama/llama-3.3-70b-instruct:free",
-  "google/gemini-2.0-flash-exp:free",
-  "google/gemma-3-27b-it:free",
+  "arcee-ai/trinity-large-preview:free",     // User requested
+  "stepfun/step-3.5-flash:free",             // User requested
+  "deepseek/deepseek-r1-0528:free",          // User requested
 ];
 
 // --- Model Health Tracking -------------------------------------------

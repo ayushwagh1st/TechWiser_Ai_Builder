@@ -97,63 +97,67 @@ async function getFilePlan(messages, currentFilePaths, sendUpdate) {
 // ─── Phase 2: Generate Files One by One ─────────────────────────────
 
 async function generateFiles(plan, userRequest, sendUpdate) {
-  const CONCURRENCY = 2; // Generate 2 files at a time
-  const MAX_FILE_RETRIES = 3;
+  const CONCURRENCY = 1; // Serial execution to avoid rate limits (20 RPM on free tier)
+  const MAX_FILE_RETRIES = 4; // Increased retries
   const fileResults = {};
   const totalFiles = plan.files.length;
 
-  // Process files in batches for parallelism
-  for (let i = 0; i < totalFiles; i += CONCURRENCY) {
-    const batch = plan.files.slice(i, i + CONCURRENCY);
+  // Process files sequentially
+  for (let i = 0; i < totalFiles; i++) {
+    const { path, description } = plan.files[i];
 
-    const batchPromises = batch.map(async (fileInfo, batchIdx) => {
-      const fileIdx = i + batchIdx;
-      const { path, description } = fileInfo;
-
-      sendUpdate({
-        phase: 'generating',
-        status: `Generating ${path} (${fileIdx + 1}/${totalFiles})...`,
-        currentFile: path,
-        progress: fileIdx,
-        total: totalFiles,
-      });
-
-      for (let retry = 0; retry < MAX_FILE_RETRIES; retry++) {
-        try {
-          if (retry > 0) {
-            console.log(`[Phase2] Retrying ${path} (attempt ${retry + 1})`);
-            await new Promise(r => setTimeout(r, 1500 * retry));
-          }
-
-          const rawCode = await openRouterSingleFile(userRequest, path, description, plan.files);
-          const code = cleanCodeResponse(rawCode);
-
-          if (code && code.length > 10) {
-            console.log(`[Phase2] ✓ ${path}: ${code.length} chars`);
-            return { path, code };
-          } else {
-            console.warn(`[Phase2] ${path}: response too short (${code?.length || 0} chars)`);
-          }
-        } catch (e) {
-          console.warn(`[Phase2] ${path} attempt ${retry + 1} error: ${e.message?.slice(0, 100)}`);
-        }
-      }
-
-      // If all retries failed, generate a placeholder
-      console.warn(`[Phase2] ✗ ${path}: all retries failed, using placeholder`);
-      const ext = path.split('.').pop();
-      if (ext === 'css') {
-        return { path, code: `/* ${description} */\n:root {\n  --primary: #6366f1;\n  --background: #0a0a0a;\n}\nbody { margin: 0; font-family: 'Inter', sans-serif; background: var(--background); color: #fff; }` };
-      }
-      return {
-        path,
-        code: `import React from 'react';\n\n// ${description}\nexport default function ${path.split('/').pop().replace('.js', '')}() {\n  return <div className="p-8 text-center text-gray-400">Loading ${path}...</div>;\n}`
-      };
+    sendUpdate({
+      phase: 'generating',
+      status: `Generating ${path} (${i + 1}/${totalFiles})...`,
+      currentFile: path,
+      progress: i,
+      total: totalFiles,
     });
 
-    const results = await Promise.all(batchPromises);
-    for (const r of results) {
-      if (r) fileResults[r.path] = { code: r.code };
+    // Rate limit buffer: wait 1s between files
+    if (i > 0) await new Promise(r => setTimeout(r, 1000));
+
+    let fileContent = null;
+    let lastError = null;
+
+    for (let retry = 0; retry < MAX_FILE_RETRIES; retry++) {
+      try {
+        if (retry > 0) {
+          console.log(`[Phase2] Retrying ${path} (attempt ${retry + 1})`);
+          // Exponential backoff: 2s, 4s, 8s
+          await new Promise(r => setTimeout(r, 2000 * Math.pow(2, retry)));
+        }
+
+        const rawCode = await openRouterSingleFile(userRequest, path, description, plan.files);
+        const code = cleanCodeResponse(rawCode);
+
+        if (code && code.length > 10) {
+          console.log(`[Phase2] ✓ ${path}: ${code.length} chars`);
+          fileContent = code;
+          break;
+        } else {
+          lastError = "Response too short";
+          console.warn(`[Phase2] ${path}: response too short (${code?.length || 0} chars)`);
+        }
+      } catch (e) {
+        lastError = e.message;
+        console.warn(`[Phase2] ${path} attempt ${retry + 1} error: ${e.message?.slice(0, 100)}`);
+      }
+    }
+
+    if (fileContent) {
+      fileResults[path] = { code: fileContent };
+    } else {
+      // If all retries failed, generate a placeholder
+      console.warn(`[Phase2] ✗ ${path}: all retries failed (${lastError}), using placeholder`);
+      const ext = path.split('.').pop();
+      if (ext === 'css') {
+        fileResults[path] = { code: `/* ${description} */\n:root {\n  --primary: #6366f1;\n  --background: #0a0a0a;\n}\nbody { margin: 0; font-family: 'Inter', sans-serif; background: var(--background); color: #fff; }` };
+      } else {
+        fileResults[path] = {
+          code: `import React from 'react';\n\n// Failed to generate: ${path}\n// Error: ${lastError}\n// Description: ${description}\n\nexport default function ${path.split('/').pop().replace(/\..*$/, '').replace(/[^a-zA-Z0-9]/g, '')}() {\n  return (\n    <div className="p-8 text-center border border-red-500/20 rounded-lg bg-red-500/5">\n      <h3 className="text-lg font-bold text-red-400">Generation Failed</h3>\n      <p className="text-zinc-400 mt-2">Could not generate {path} after multiple attempts.</p>\n      <p className="text-xs text-zinc-500 mt-4 font-mono">{lastError}</p>\n      <button onClick={() => window.location.reload()} className="mt-4 px-4 py-2 bg-zinc-800 rounded hover:bg-zinc-700 text-sm">Reload to Retry</button>\n    </div>\n  );\n}`
+        };
+      }
     }
   }
 

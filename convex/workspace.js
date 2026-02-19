@@ -64,3 +64,13 @@ export const UpdateFiles = mutation({
     }
 })
 
+export const DeleteWorkspace = mutation({
+    args: {
+        workspaceId: v.id('workspace'),
+    },
+    handler: async (ctx, args) => {
+        await ctx.db.delete(args.workspaceId);
+        return { success: true };
+    }
+})
+
