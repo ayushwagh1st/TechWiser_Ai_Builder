@@ -2,9 +2,9 @@
 import Lookup from '@/data/Lookup';
 import { MessagesContext } from '@/context/MessagesContext';
 import { useUser } from '@/hooks/useUser';
-import { ArrowRight, Sparkles, Send, Link, Wand2, Download, Code, Database, Layers } from 'lucide-react';
+import { ArrowRight, Sparkles, Send, Link, Wand2, Download, Code, Database, Layers, MessageSquare, Trash2, History } from 'lucide-react';
 import React, { useContext, useState, useEffect, useCallback, useRef } from 'react';
-import { useMutation } from 'convex/react';
+import { useMutation, useQuery } from 'convex/react';
 import { api } from '@/convex/_generated/api';
 import { useRouter } from 'next/navigation';
 
@@ -14,6 +14,8 @@ function Hero() {
     const { messages, setMessages } = useContext(MessagesContext);
     const { user } = useUser();
     const CreateWorkspace = useMutation(api.workspace.CreateWorkspace);
+    const DeleteWorkspace = useMutation(api.workspace.DeleteWorkspace);
+    const userWorkspaces = useQuery(api.workspace.GetAllWorkspaces, user?.token ? { userToken: user?.token } : "skip");
     const router = useRouter();
     const [installPrompt, setInstallPrompt] = useState(null);
     const [showInstallBanner, setShowInstallBanner] = useState(false);
@@ -207,6 +209,49 @@ function Hero() {
                         ))}
                     </div>
                 </div>
+
+                {/* Recent Workspaces */}
+                {user && userWorkspaces && userWorkspaces.length > 0 && (
+                    <div className="w-full max-w-2xl mt-10 sm:mt-16 animate-in fade-in slide-in-from-bottom-10 duration-700 delay-500 text-left">
+                        <div className="flex items-center gap-2 mb-4 px-2">
+                            <History className="w-4 h-4 text-violet-400" />
+                            <h3 className="text-sm font-semibold text-white">Recent Chats</h3>
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
+                            {userWorkspaces.slice(0, 6).map((workspace) => (
+                                <div key={workspace._id} className="group relative flex items-center justify-between p-4 rounded-2xl glass hover:bg-white/[0.04] transition-all duration-200 border border-white/[0.02] hover:border-violet-500/20 shadow-sm hover:shadow-violet-500/10">
+                                    <button
+                                        onClick={() => router.push('/workspace/' + workspace._id)}
+                                        className="flex-1 text-left min-w-0 pr-4"
+                                    >
+                                        <div className="flex items-center gap-2 mb-1.5">
+                                            <MessageSquare className="w-3.5 h-3.5 text-zinc-500 shrink-0" />
+                                            <p className="text-[13px] font-medium text-zinc-200 truncate">
+                                                {workspace.messages?.[0]?.content || 'New Workspace'}
+                                            </p>
+                                        </div>
+                                        <p className="text-[11px] text-zinc-600 truncate flex items-center gap-1.5 ml-5">
+                                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500/50" />
+                                            {workspace._creationTime ? new Date(workspace._creationTime).toLocaleDateString() : 'Recent'}
+                                        </p>
+                                    </button>
+                                    <button
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            if (window.confirm('Are you sure you want to delete this chat permanently?')) {
+                                                DeleteWorkspace({ workspaceId: workspace._id });
+                                            }
+                                        }}
+                                        className="p-2 rounded-xl text-zinc-600 hover:text-red-400 hover:bg-red-500/10 opacity-0 group-hover:opacity-100 transition-all btn-press shrink-0 shadow-sm shadow-red-500/0 hover:shadow-red-500/20"
+                                        title="Delete Chat"
+                                    >
+                                        <Trash2 className="w-4 h-4" />
+                                    </button>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                )}
             </div>
 
             {/* Footer */}

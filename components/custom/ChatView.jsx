@@ -44,10 +44,10 @@ MessageItem.displayName = 'MessageItem';
 function ChatView() {
     const { id } = useParams();
     const convex = useConvex();
-    const { messages, setMessages, previewError } = useContext(MessagesContext);
+    const { messages, setMessages, previewError, isGenerating, setIsGenerating, abortControllerRef, abortGeneration } = useContext(MessagesContext);
     const [userInput, setUserInput] = useState('');
     const [showErrorPopup, setShowErrorPopup] = useState(true);
-    const [loading, setLoading] = useState(false);
+    const loading = isGenerating;
     const [isFocused, setIsFocused] = useState(false);
     const UpdateMessages = useMutation(api.workspace.UpdateWorkspace);
     const messagesEndRef = useRef(null);
@@ -85,12 +85,14 @@ function ChatView() {
     }, [previewError]);
 
     const GetAiResponse = useCallback(async () => {
-        setLoading(true);
+        setIsGenerating(true);
+        abortControllerRef.current = new AbortController();
         try {
             const response = await fetch('/api/ai-chat', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ messages }),
+                signal: abortControllerRef.current.signal
             });
 
             const reader = response.body.getReader();
@@ -135,11 +137,24 @@ function ChatView() {
             const finalMessages = [...messages, { role: 'ai', content: fullText }];
             await UpdateMessages({ messages: finalMessages, workspaceId: id });
         } catch (error) {
-            console.error('Error getting AI response:', error);
+            if (error.name === 'AbortError') {
+                console.log('AI response aborted');
+                // Remove the empty message if aborted
+                setMessages(prev => {
+                    const lastMsg = prev[prev.length - 1];
+                    if (lastMsg?.role === 'ai' && !lastMsg?.content) {
+                        return prev.slice(0, -1);
+                    }
+                    return prev;
+                });
+            } else {
+                console.error('Error getting AI response:', error);
+            }
         } finally {
-            setLoading(false);
+            setIsGenerating(false);
+            abortControllerRef.current = null;
         }
-    }, [messages, id, UpdateMessages, setMessages]);
+    }, [messages, id, UpdateMessages, setMessages, setIsGenerating, abortControllerRef]);
 
     useEffect(() => {
         if (messages?.length > 0) {
@@ -311,16 +326,19 @@ function ChatView() {
                             rows={1}
                         />
                         <div className="absolute right-2 bottom-2">
-                            {userInput.trim() || loading ? (
+                            {loading ? (
                                 <button
-                                    onClick={() => !loading && onGenerate(userInput)}
-                                    disabled={loading}
-                                    className={`p-2.5 rounded-xl text-white shadow-lg transition-all min-w-[44px] min-h-[44px] flex items-center justify-center btn-press ${loading
-                                            ? 'bg-red-500/80 cursor-wait shadow-red-500/20'
-                                            : 'bg-gradient-to-r from-violet-600 to-fuchsia-600 shadow-violet-600/20 hover:shadow-violet-600/40 pulse-glow'
-                                        }`}
+                                    onClick={abortGeneration}
+                                    className="p-2.5 rounded-xl text-white shadow-lg transition-all min-w-[44px] min-h-[44px] flex items-center justify-center btn-press bg-red-500 hover:bg-red-600 shadow-red-500/20 pulse-glow"
                                 >
-                                    {loading ? <Square className="h-4 w-4 fill-white" /> : <Send className="h-4 w-4" />}
+                                    <Square className="h-4 w-4 fill-white" />
+                                </button>
+                            ) : userInput.trim() ? (
+                                <button
+                                    onClick={() => onGenerate(userInput)}
+                                    className="p-2.5 rounded-xl text-white shadow-lg transition-all min-w-[44px] min-h-[44px] flex items-center justify-center btn-press bg-gradient-to-r from-violet-600 to-fuchsia-600 shadow-violet-600/20 hover:shadow-violet-600/40 pulse-glow"
+                                >
+                                    <Send className="h-4 w-4" />
                                 </button>
                             ) : (
                                 <div className="p-2.5 text-zinc-800 min-w-[44px] min-h-[44px] flex items-center justify-center">

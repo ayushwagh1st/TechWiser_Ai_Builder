@@ -35,10 +35,10 @@ function CodeView() {
     const { id } = useParams();
     const [activeTab, setActiveTab] = useState('code');
     const [filesData, setFilesData] = useState(null);
-    const { messages, setMessages, setPreviewError, buildOptions } = useContext(MessagesContext);
+    const { messages, setMessages, setPreviewError, buildOptions, isGenerating, setIsGenerating, abortControllerRef } = useContext(MessagesContext);
     const UpdateFiles = useMutation(api.workspace.UpdateFiles);
     const convex = useConvex();
-    const [loading, setLoading] = useState(false);
+    const loading = isGenerating;
     const [deploying, setDeploying] = useState(false);
     const [deploySuccess, setDeploySuccess] = useState(false);
     const [elapsedTime, setElapsedTime] = useState(0);
@@ -151,7 +151,7 @@ function CodeView() {
     }, [messages, buildOptions]);
 
     const GenerateAiCode = useCallback(async () => {
-        setLoading(true);
+        setIsGenerating(true);
         setGenPhase('planning');
         setGenStatus('Starting...');
         setGenProgress(0);
@@ -160,8 +160,10 @@ function CodeView() {
         setGenPlan([]);
         setClientRetry(0);
 
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 600_000);
+        abortControllerRef.current = new AbortController();
+        const timeout = setTimeout(() => {
+            if (abortControllerRef.current) abortControllerRef.current.abort();
+        }, 600_000);
 
         try {
             for (let attempt = 0; attempt < MAX_CLIENT_RETRIES; attempt++) {
@@ -175,7 +177,7 @@ function CodeView() {
                 }
 
                 try {
-                    const result = await processStream(controller.signal);
+                    const result = await processStream(abortControllerRef.current.signal);
 
                     if (result.success) {
                         const processedAiFiles = preprocessFiles(result.data.files || {});
@@ -205,10 +207,11 @@ function CodeView() {
             }
         } finally {
             clearTimeout(timeout);
-            setLoading(false);
+            setIsGenerating(false);
             setGenPhase('idle');
+            abortControllerRef.current = null;
         }
-    }, [messages, id, UpdateFiles, preprocessFiles, buildOptions, setMessages, processStream]);
+    }, [messages, id, UpdateFiles, preprocessFiles, buildOptions, setMessages, processStream, setIsGenerating, abortControllerRef]);
 
     useEffect(() => {
         if (messages?.length > 0 && messages[messages.length - 1].role === 'user') {

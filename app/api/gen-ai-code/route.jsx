@@ -96,7 +96,7 @@ async function getFilePlan(messages, currentFilePaths, sendUpdate) {
 
 // ─── Phase 2: Generate Files One by One ─────────────────────────────
 
-async function generateFiles(plan, userRequest, sendUpdate) {
+async function generateFiles(plan, userRequest, messages, sendUpdate) {
   const CONCURRENCY = 1; // Serial execution to avoid rate limits (20 RPM on free tier)
   const MAX_FILE_RETRIES = 4; // Increased retries
   const fileResults = {};
@@ -128,7 +128,7 @@ async function generateFiles(plan, userRequest, sendUpdate) {
           await new Promise(r => setTimeout(r, 2000 * Math.pow(2, retry)));
         }
 
-        const rawCode = await openRouterSingleFile(userRequest, path, description, plan.files);
+        const rawCode = await openRouterSingleFile(userRequest, path, description, plan.files, null, messages);
         const code = cleanCodeResponse(rawCode);
 
         if (code && code.length > 10) {
@@ -270,7 +270,7 @@ export async function POST(req) {
                   // Use specific prompt for fixing
                   const fixPrompt = `You are fixing a bug in ${targetFile}. The error reported is: "${userRequest}".\n\nExisting code context is provided. Rewrite the entire file to fix the error. Return ONLY code.`;
 
-                  const rawCode = await openRouterSingleFile(fixPrompt, targetFile, fixPlan.instructions || "Fix the error", [{ path: targetFile, description: "File to fix" }], originalCode);
+                  const rawCode = await openRouterSingleFile(fixPrompt, targetFile, fixPlan.instructions || "Fix the error", [{ path: targetFile, description: "File to fix" }], originalCode, msgs);
                   const code = cleanCodeResponse(rawCode);
 
                   if (code && code.length > 10) {
@@ -303,7 +303,7 @@ export async function POST(req) {
               });
 
               // Phase 2: Generate each file
-              files = await generateFiles(plan, userRequest, send);
+              files = await generateFiles(plan, userRequest, msgs, send);
             }
 
             const fileCount = Object.keys(files || {}).length;

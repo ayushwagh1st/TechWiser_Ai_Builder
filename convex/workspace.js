@@ -44,6 +44,9 @@ export const UpdateWorkspace = mutation({
         messages: v.any(),
     },
     handler: async (ctx, args) => {
+        const existing = await ctx.db.get(args.workspaceId);
+        if (!existing) return null;
+
         const result = await ctx.db.patch(args.workspaceId, {
             messages: args.messages
         });
@@ -57,6 +60,9 @@ export const UpdateFiles = mutation({
         files: v.any(),
     },
     handler: async (ctx, args) => {
+        const existing = await ctx.db.get(args.workspaceId);
+        if (!existing) return null;
+
         const result = await ctx.db.patch(args.workspaceId, {
             fileData: args.files
         });
@@ -69,8 +75,12 @@ export const DeleteWorkspace = mutation({
         workspaceId: v.id('workspace'),
     },
     handler: async (ctx, args) => {
-        await ctx.db.delete(args.workspaceId);
-        return { success: true };
+        try {
+            await ctx.db.delete(args.workspaceId);
+            return { success: true };
+        } catch (e) {
+            return { success: false, error: e.message };
+        }
     }
 })
 

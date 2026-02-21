@@ -330,7 +330,7 @@ export async function openRouterFilePlan(messages, currentFilePaths = []) {
 
 /** Phase 2: Generate a single file (non-streaming, focused response) */
 /** Phase 2: Generate a single file (non-streaming, focused response) */
-export async function openRouterSingleFile(userRequest, fileName, fileDescription, otherFiles = [], originalCode = null) {
+export async function openRouterSingleFile(userRequest, fileName, fileDescription, otherFiles = [], originalCode = null, messages = []) {
   const otherFilesNote = otherFiles.length > 0
     ? `\nOther files in this project: ${otherFiles.map(f => f.path).join(", ")}. Import from them as needed.`
     : "";
@@ -365,6 +365,7 @@ export async function openRouterSingleFile(userRequest, fileName, fileDescriptio
 
   const formatted = [
     { role: "system", content: `${Prompt.SINGLE_FILE_PROMPT}${otherFilesNote}` },
+    ...messages.map(m => ({ role: m.role === "ai" ? "assistant" : m.role, content: m.content || "" })),
     { role: "user", content: promptContent },
   ];
   // Increase max tokens for full file rewrites
