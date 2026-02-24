@@ -60,10 +60,41 @@ root.render(
 @tailwind utilities;`
     },
     '/src/App.js': {
-      code: `export default function App() {
+      code: `import React, { useState, useEffect } from 'react';
+
+export default function App() {
+  const [text, setText] = useState('Analyzing idea');
+  
+  useEffect(() => {
+    const phases = ['Planning structure', 'Generating code', 'Styling UI', 'Adding logic', 'Finalizing'];
+    let i = 0;
+    const interval = setInterval(() => {
+      i = (i + 1) % phases.length;
+      setText(phases[i]);
+    }, 2000);
+    return () => clearInterval(interval);
+  }, []);
+
   return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', fontFamily: 'sans-serif', background: '#0a0a0a', color: '#fff' }}>
-      <p>Loading your app...</p>
+    <div className="flex flex-col items-center justify-center min-h-screen bg-[#060608] text-white font-sans overflow-hidden">
+      <div className="relative flex items-center justify-center mb-8">
+        <div className="absolute w-32 h-32 bg-violet-500/20 rounded-full blur-xl animate-pulse"></div>
+        <div className="w-12 h-12 border-[3px] border-white/5 border-t-violet-500 border-r-fuchsia-500 rounded-full animate-spin"></div>
+      </div>
+      
+      <div className="text-center z-10 relative">
+        <h2 className="text-2xl font-semibold mb-2 bg-gradient-to-r from-violet-400 to-fuchsia-400 text-transparent bg-clip-text inline-block">
+          TechWiser AI is working
+        </h2>
+        <div className="flex items-center justify-center gap-2 text-zinc-400 mt-2">
+          <div className="flex gap-1">
+            <div className="w-1.5 h-1.5 rounded-full bg-violet-500 animate-bounce" style={{ animationDelay: '0ms' }}></div>
+            <div className="w-1.5 h-1.5 rounded-full bg-violet-500 animate-bounce" style={{ animationDelay: '150ms' }}></div>
+            <div className="w-1.5 h-1.5 rounded-full bg-violet-500 animate-bounce" style={{ animationDelay: '300ms' }}></div>
+          </div>
+          <span className="text-sm font-medium ml-2 w-[120px] text-left">{text}...</span>
+        </div>
+      </div>
     </div>
   );
 }`

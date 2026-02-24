@@ -96,10 +96,11 @@ async function getFilePlan(messages, currentFilePaths, sendUpdate) {
 
 // ─── Phase 2: Generate Files One by One ─────────────────────────────
 
-async function generateFiles(plan, userRequest, messages, sendUpdate) {
+async function generateFiles(plan, userRequest, messages, sendUpdate, reqFiles = {}) {
   const CONCURRENCY = 1; // Serial execution to avoid rate limits (20 RPM on free tier)
   const MAX_FILE_RETRIES = 4; // Increased retries
   const fileResults = {};
+  const completedFiles = []; // Track actual successful code to serve as context
   const totalFiles = plan.files.length;
 
   // Process files sequentially
@@ -114,11 +115,35 @@ async function generateFiles(plan, userRequest, messages, sendUpdate) {
       total: totalFiles,
     });
 
+    // ─── CHECK IF WE ALREADY HAVE THIS FILE ─────────────────
+    let existingCode = null;
+    let fileIsClean = false;
+
+    // Normalize path to check in reqFiles (handle both /src/App.js and src/App.js)
+    const normalizedKey = path.startsWith('/') ? path : `/${path}`;
+    const altKey = path.startsWith('/') ? path.substring(1) : path;
+
+    const existingFileRaw = reqFiles[normalizedKey] || reqFiles[altKey];
+
+    if (existingFileRaw) {
+      existingCode = typeof existingFileRaw === 'string' ? existingFileRaw : existingFileRaw.code;
+
+      // We only reuse it if it DOES NOT contain our failure placeholder
+      if (existingCode && !existingCode.includes('Failed to generate:') && !existingCode.includes('Generation Failed')) {
+        fileIsClean = true;
+      }
+    }
+
+    if (fileIsClean && existingCode) {
+      console.log(`[Phase2] ⏭ Skipping ${path}, keeping existing valid code (${existingCode.length} chars)`);
+      fileContent = existingCode;
+      fileResults[path] = { code: fileContent };
+      completedFiles.push({ path, code: fileContent });
+      continue; // Move to next file immediately!
+    }
+
     // Rate limit buffer: wait 1s between files
     if (i > 0) await new Promise(r => setTimeout(r, 1000));
-
-    let fileContent = null;
-    let lastError = null;
 
     for (let retry = 0; retry < MAX_FILE_RETRIES; retry++) {
       try {
@@ -128,7 +153,8 @@ async function generateFiles(plan, userRequest, messages, sendUpdate) {
           await new Promise(r => setTimeout(r, 2000 * Math.pow(2, retry)));
         }
 
-        const rawCode = await openRouterSingleFile(userRequest, path, description, plan.files, null, messages);
+        // Pass completedFiles so the AI knows EXACTLY what forms the foundation
+        const rawCode = await openRouterSingleFile(userRequest, path, description, plan.files, null, messages, completedFiles);
         const code = cleanCodeResponse(rawCode);
 
         if (code && code.length > 10) {
@@ -147,6 +173,7 @@ async function generateFiles(plan, userRequest, messages, sendUpdate) {
 
     if (fileContent) {
       fileResults[path] = { code: fileContent };
+      completedFiles.push({ path, code: fileContent });
     } else {
       // If all retries failed, generate a placeholder
       console.warn(`[Phase2] ✗ ${path}: all retries failed (${lastError}), using placeholder`);
@@ -154,8 +181,10 @@ async function generateFiles(plan, userRequest, messages, sendUpdate) {
       if (ext === 'css') {
         fileResults[path] = { code: `/* ${description} */\n:root {\n  --primary: #6366f1;\n  --background: #0a0a0a;\n}\nbody { margin: 0; font-family: 'Inter', sans-serif; background: var(--background); color: #fff; }` };
       } else {
+        const componentName = path.split('/').pop().replace(/\..*$/, '').replace(/[^a-zA-Z0-9]/g, '');
+        const safeErrorMsg = JSON.stringify(lastError || 'Unknown error');
         fileResults[path] = {
-          code: `import React from 'react';\n\n// Failed to generate: ${path}\n// Error: ${lastError}\n// Description: ${description}\n\nexport default function ${path.split('/').pop().replace(/\..*$/, '').replace(/[^a-zA-Z0-9]/g, '')}() {\n  return (\n    <div className="p-8 text-center border border-red-500/20 rounded-lg bg-red-500/5">\n      <h3 className="text-lg font-bold text-red-400">Generation Failed</h3>\n      <p className="text-zinc-400 mt-2">Could not generate {path} after multiple attempts.</p>\n      <p className="text-xs text-zinc-500 mt-4 font-mono">{lastError}</p>\n      <button onClick={() => window.location.reload()} className="mt-4 px-4 py-2 bg-zinc-800 rounded hover:bg-zinc-700 text-sm">Reload to Retry</button>\n    </div>\n  );\n}`
+          code: `import React from 'react';\n\n// Failed to generate: ${path}\n// Error: ${safeErrorMsg}\n// Description: ${description}\n\nexport default function ${componentName}() {\n  return (\n    <div className="p-8 text-center border border-red-500/20 rounded-lg bg-red-500/5">\n      <h3 className="text-lg font-bold text-red-400">Generation Failed</h3>\n      <p className="text-zinc-400 mt-2">Could not generate ${path.split('/').pop()} after multiple attempts.</p>\n      <p className="text-xs text-zinc-500 mt-4 font-mono">{${safeErrorMsg}}</p>\n    </div>\n  );\n}`
         };
       }
     }
@@ -303,7 +332,7 @@ export async function POST(req) {
               });
 
               // Phase 2: Generate each file
-              files = await generateFiles(plan, userRequest, msgs, send);
+              files = await generateFiles(plan, userRequest, msgs, send, reqFiles || {});
             }
 
             const fileCount = Object.keys(files || {}).length;

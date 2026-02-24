@@ -330,10 +330,16 @@ export async function openRouterFilePlan(messages, currentFilePaths = []) {
 
 /** Phase 2: Generate a single file (non-streaming, focused response) */
 /** Phase 2: Generate a single file (non-streaming, focused response) */
-export async function openRouterSingleFile(userRequest, fileName, fileDescription, otherFiles = [], originalCode = null, messages = []) {
+export async function openRouterSingleFile(userRequest, fileName, fileDescription, otherFiles = [], originalCode = null, messages = [], completedFiles = []) {
   const otherFilesNote = otherFiles.length > 0
     ? `\nOther files in this project: ${otherFiles.map(f => f.path).join(", ")}. Import from them as needed.`
     : "";
+
+  let completedFilesContext = "";
+  if (completedFiles.length > 0) {
+    completedFilesContext = `\n\n**CRITICAL CONTEXT: ALREADY COMPLETED FILES**\nThese files have just been generated for this project and MUST be integrated seamlessly. You MUST match their exports, naming conventions, CSS classes, and logic perfectly:\n\n`;
+    completedFilesContext += completedFiles.map(f => `--- ${f.path} ---\n\`\`\`javascript\n${f.code}\n\`\`\``).join("\n\n");
+  }
 
   let promptContent = "";
   if (originalCode) {
@@ -357,7 +363,7 @@ export async function openRouterSingleFile(userRequest, fileName, fileDescriptio
      PROJECT REQUEST: ${userRequest}
 
      GENERATE FILE: ${fileName}
-     DESCRIPTION: ${fileDescription}
+     DESCRIPTION: ${fileDescription}${completedFilesContext}
 
      Output ONLY the raw source code for this file. No JSON wrapping. No markdown. Just code.
      `;
