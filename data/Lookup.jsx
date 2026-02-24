@@ -18,10 +18,11 @@ export default {
         name: "generated-project",
         version: "1.0.0",
         private: true,
-        main: "/index.js",
+        main: "/src/index.js",
         dependencies: {
           "react": "^18.2.0",
-          "react-dom": "^18.2.0"
+          "react-dom": "^18.2.0",
+          "react-scripts": "^5.0.1"
         }
       }, null, 2)
     },
@@ -40,12 +41,25 @@ export default {
             </body>
             </html>`
     },
-    '/App.css': {
-      code: `@tailwind base;
-            @tailwind components;
-            @tailwind utilities;`
+    '/src/index.js': {
+      code: `import React, { StrictMode } from "react";
+import { createRoot } from "react-dom/client";
+import "./index.css";
+import App from "./App";
+
+const root = createRoot(document.getElementById("root"));
+root.render(
+  <StrictMode>
+    <App />
+  </StrictMode>
+);`
     },
-    '/App.js': {
+    '/src/index.css': {
+      code: `@tailwind base;
+@tailwind components;
+@tailwind utilities;`
+    },
+    '/src/App.js': {
       code: `export default function App() {
   return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', fontFamily: 'sans-serif', background: '#0a0a0a', color: '#fff' }}>

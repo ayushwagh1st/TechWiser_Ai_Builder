@@ -65,12 +65,12 @@ async function getFilePlan(messages, currentFilePaths, sendUpdate) {
         // Validate file entries
         const validFiles = plan.files.filter(f => f.path && f.description);
         if (validFiles.length > 0) {
-          // Ensure /App.js and /index.css exist
-          if (!validFiles.find(f => f.path === '/App.js')) {
-            validFiles.unshift({ path: '/App.js', description: 'Main app component with layout and routing' });
+          // Ensure /src/App.js and /src/index.css exist
+          if (!validFiles.find(f => f.path === '/src/App.js' || f.path === 'src/App.js')) {
+            validFiles.unshift({ path: '/src/App.js', description: 'Main app component with layout and routing' });
           }
-          if (!validFiles.find(f => f.path === '/index.css')) {
-            validFiles.push({ path: '/index.css', description: 'Global styles with CSS variables' });
+          if (!validFiles.find(f => f.path === '/src/index.css' || f.path === 'src/index.css')) {
+            validFiles.push({ path: '/src/index.css', description: 'Global styles with CSS variables' });
           }
           console.log(`[Phase1] ✓ Plan has ${validFiles.length} files`);
           return { projectTitle: plan.projectTitle || 'Generated Project', files: validFiles };
@@ -88,8 +88,8 @@ async function getFilePlan(messages, currentFilePaths, sendUpdate) {
   return {
     projectTitle: 'Generated Project',
     files: [
-      { path: '/App.js', description: 'Main app component with layout' },
-      { path: '/index.css', description: 'Global styles with CSS variables and Tailwind utilities' },
+      { path: '/src/App.js', description: 'Main app component with layout' },
+      { path: '/src/index.css', description: 'Global styles with CSS variables and Tailwind utilities' },
     ]
   };
 }

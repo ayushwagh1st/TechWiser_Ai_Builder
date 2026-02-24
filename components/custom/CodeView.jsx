@@ -78,9 +78,20 @@ function CodeView() {
         const processed = {};
         Object.entries(rawFiles).forEach(([path, content]) => {
             let np = path;
-            if (np.startsWith('/src/')) np = '/' + np.slice(5);
-            else if (np.startsWith('src/')) np = '/' + np.slice(4);
+
+            // Normalize to always be inside /src unless it's package.json, public/, or config files
             if (!np.startsWith('/')) np = '/' + np;
+
+            if (
+                np !== '/package.json' &&
+                !np.startsWith('/public/') &&
+                !np.endsWith('.config.js')
+            ) {
+                // Remove existing /src/ if present to avoid /src/src/
+                np = np.replace(/^\/src\//, '/');
+                np = '/src' + np;
+            }
+
             if (typeof content === 'string') processed[np] = { code: content };
             else if (content && typeof content === 'object') {
                 processed[np] = content.code ? content : { code: JSON.stringify(content, null, 2) };
@@ -476,7 +487,7 @@ function CodeView() {
                     files={files}
                     template="react"
                     theme={'dark'}
-                    customSetup={{ dependencies: { ...Lookup.DEPENDANCY }, entry: '/index.js' }}
+                    customSetup={{ dependencies: { ...Lookup.DEPENDANCY }, entry: '/src/index.js' }}
                     options={{
                         externalResources: ['https://cdn.tailwindcss.com'],
                         bundlerTimeoutSecs: 120,
